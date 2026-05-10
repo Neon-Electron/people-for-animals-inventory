@@ -489,6 +489,8 @@ function MedicineDialog({ title, medicine, types, subclasses, dogs, onClose, onS
     }
   );
   const [created, setCreated] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState("");
 
   function update(key, value) {
     setForm((current) => ({
@@ -500,8 +502,20 @@ function MedicineDialog({ title, medicine, types, subclasses, dogs, onClose, onS
 
   async function submit(event) {
     event.preventDefault();
-    const saved = await onSave(form);
-    setCreated(saved);
+    setIsSaving(true);
+    setError("");
+    try {
+      const saved = await onSave(form);
+      if (medicine) {
+        onClose();
+        return;
+      }
+      setCreated(saved);
+    } catch (saveError) {
+      setError(saveError?.message || "Could not save this medicine. Check Firebase settings and Firestore rules.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   if (created && !medicine) {
@@ -529,8 +543,9 @@ function MedicineDialog({ title, medicine, types, subclasses, dogs, onClose, onS
         {form.status === "On Hold" && (
           <label>Dog<select required value={form.holdDogId} onChange={(event) => update("holdDogId", event.target.value)}><option value="">Select dog</option>{dogs.map((dog) => <option key={dog.id} value={dog.id}>{dog.name} · {dog.kennel}</option>)}</select></label>
         )}
-        <button className="primary wide" type="submit">
-          <Check size={18} /> Save
+        {error && <p className="error wide">{error}</p>}
+        <button className="primary wide" type="submit" disabled={isSaving}>
+          <Check size={18} /> {isSaving ? "Saving..." : "Save"}
         </button>
       </form>
     </Dialog>

@@ -36,6 +36,11 @@ button:hover {
   background: #eef3ee;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
+}
+
 .primary {
   background: #1d6f46;
   border-color: #1d6f46;
