@@ -1,0 +1,55 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isConfiguredAdminEmail() {
+      return signedIn() && request.auth.token.email == "aroragagan09@gmail.com";
+    }
+
+    function userProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isAdmin() {
+      return isConfiguredAdminEmail() || (signedIn() && userProfile().data.role == "admin");
+    }
+
+    match /medicines/{document} {
+      allow read: if signedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+        || (
+          signedIn()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["quantity", "updatedAt"])
+          && request.resource.data.quantity is number
+        );
+    }
+
+    match /dogs/{document} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /settings/{document} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.email == request.auth.token.email
+        && (
+          request.resource.data.role == "user"
+          || (request.resource.data.role == "admin" && isConfiguredAdminEmail())
+        );
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+  }
+}

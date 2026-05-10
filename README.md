@@ -9,14 +9,14 @@ npm install
 npm run dev
 ```
 
-Default local admin:
+Default local admin for local-storage fallback:
 
 ```text
 User ID: aroragagan09@gmail.com
 Password: admin123
 ```
 
-For deployment, set a strong password in Vercel instead of relying on the local fallback.
+For Firebase deployments, enable Email/Password sign-in in Firebase Authentication. The account matching `VITE_ADMIN_USER_ID` is treated as the first admin after registration/login.
 
 ## Vercel Environment Variables
 
@@ -34,6 +34,18 @@ VITE_FIREBASE_APP_ID=...
 ```
 
 If Firebase variables are omitted, the app runs in browser local storage mode. For shared production use, configure Firebase so all admins see the same data.
+
+## Firebase Setup
+
+In Firebase Console:
+
+1. Go to **Authentication > Sign-in method**.
+2. Enable **Email/Password**.
+3. Register the admin account in the app with the email from `VITE_ADMIN_USER_ID`.
+4. Register regular users from the app login screen. They can update quantities only.
+5. Use the Admin tab to promote users when needed.
+
+Firestore rules are included in `firestore.rules`. Paste them into Firebase Console under **Firestore Database > Rules** and publish them after replacing the admin email if needed. These rules allow regular users to update only `quantity` and `updatedAt` on medicines, while admins can add/delete medicines and manage dogs, data, and users.
 
 ## Vercel Build Settings
 

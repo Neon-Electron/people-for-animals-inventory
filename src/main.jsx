@@ -19,10 +19,17 @@ import {
 } from "lucide-react";
 import { initializeApp } from "firebase/app";
 import {
+  createUserWithEmailAndPassword,
+  getAuth,
+  signInWithEmailAndPassword,
+  signOut
+} from "firebase/auth";
+import {
   addDoc,
   collection,
   deleteDoc,
   doc,
+  getDoc,
   getDocs,
   getFirestore,
   onSnapshot,
@@ -53,8 +60,8 @@ const seedDogs = [
 ];
 
 const seedUsers = [
-  { id: "admin-local", name: "Inventory Admin", userId: env("VITE_ADMIN_USER_ID", "admin"), role: "admin" },
-  { id: "vet-1", name: "Clinic Staff", userId: "staff", role: "user" }
+  { id: "admin-local", name: "Inventory Admin", email: env("VITE_ADMIN_USER_ID", "aroragagan09@gmail.com"), userId: env("VITE_ADMIN_USER_ID", "aroragagan09@gmail.com"), role: "admin" },
+  { id: "vet-1", name: "Clinic Staff", email: "staff@example.com", userId: "staff@example.com", role: "user" }
 ];
 
 function env(key, fallback = "") {
@@ -79,7 +86,9 @@ const firebaseConfig = {
 };
 
 const hasFirebaseConfig = Object.values(firebaseConfig).every(Boolean);
-const db = hasFirebaseConfig ? getFirestore(initializeApp(firebaseConfig)) : null;
+const firebaseApp = hasFirebaseConfig ? initializeApp(firebaseConfig) : null;
+const db = firebaseApp ? getFirestore(firebaseApp) : null;
+const auth = firebaseApp ? getAuth(firebaseApp) : null;
 
 function useInventoryStore() {
   const [state, setState] = useState(() => {
@@ -143,13 +152,14 @@ function useInventoryStore() {
         setState((current) => ({ ...current, medicines: [medicine, ...current.medicines] }));
         return medicine;
       },
-      updateMedicine(serialNumber, patch) {
+      async updateMedicine(serialNumber, patch) {
         if (db) {
-          updateDoc(doc(db, "medicines", serialNumber), {
+          const updatePayload = {
             ...patch,
-            quantity: Number(patch.quantity ?? 0),
+            ...(patch.quantity === undefined ? {} : { quantity: Number(patch.quantity) }),
             updatedAt: new Date().toISOString()
-          });
+          };
+          await updateDoc(doc(db, "medicines", serialNumber), updatePayload);
           return;
         }
         setState((current) => ({
@@ -161,9 +171,9 @@ function useInventoryStore() {
           )
         }));
       },
-      deleteMedicine(serialNumber) {
+      async deleteMedicine(serialNumber) {
         if (db) {
-          deleteDoc(doc(db, "medicines", serialNumber));
+          await deleteDoc(doc(db, "medicines", serialNumber));
           return;
         }
         setState((current) => ({
@@ -238,6 +248,21 @@ function useInventoryStore() {
           return;
         }
         setState((current) => ({ ...current, users: [...current.users, nextUser] }));
+      },
+      upsertUser(user) {
+        if (db) {
+          setDoc(doc(db, "users", user.id), user, { merge: true });
+          return;
+        }
+        setState((current) => {
+          const exists = current.users.some((item) => item.id === user.id || item.email === user.email);
+          return {
+            ...current,
+            users: exists
+              ? current.users.map((item) => (item.id === user.id || item.email === user.email ? { ...item, ...user } : item))
+              : [...current.users, user]
+          };
+        });
       }
     }),
     [state]
@@ -253,32 +278,81 @@ function App() {
 
   const isAdmin = session?.role === "admin";
 
-  function login(userId, password) {
-    const adminUserId = env("VITE_ADMIN_USER_ID", "aroragagan09@gmail.com");
+  async function resolveUserSession(firebaseUser, fallbackName = "") {
+    const adminEmail = env("VITE_ADMIN_USER_ID", "aroragagan09@gmail.com").toLowerCase();
+    const email = firebaseUser.email.toLowerCase();
+    const userRef = doc(db, "users", firebaseUser.uid);
+    const profile = await getDoc(userRef);
+    const existing = profile.exists() ? profile.data() : {};
+    const next = {
+      id: firebaseUser.uid,
+      email,
+      userId: email,
+      name: existing.name || fallbackName || email,
+      role: email === adminEmail ? "admin" : existing.role || "user"
+    };
+    await setDoc(userRef, next, { merge: true });
+    sessionStorage.setItem("pfa-session", JSON.stringify(next));
+    setSession(next);
+    return next;
+  }
+
+  async function login(email, password) {
+    const cleanEmail = email.trim().toLowerCase();
+    if (auth && db) {
+      const credential = await signInWithEmailAndPassword(auth, cleanEmail, password);
+      await resolveUserSession(credential.user);
+      return true;
+    }
+
+    const adminUserId = env("VITE_ADMIN_USER_ID", "aroragagan09@gmail.com").toLowerCase();
     const adminPassword = env("VITE_ADMIN_PASSWORD", "admin123");
-    const knownUser = store.users.find((user) => user.userId === userId);
-    if (userId === adminUserId && password === adminPassword) {
-      const next = { userId, role: "admin", name: knownUser?.name || "Admin" };
+    const knownUser = store.users.find((user) => (user.email || user.userId) === cleanEmail);
+    if (cleanEmail === adminUserId && password === adminPassword) {
+      const next = { id: "admin-local", email: cleanEmail, userId: cleanEmail, role: "admin", name: knownUser?.name || "Admin" };
       sessionStorage.setItem("pfa-session", JSON.stringify(next));
       setSession(next);
       return true;
     }
     if (knownUser && password === "pfa123") {
-      const next = { userId, role: knownUser.role, name: knownUser.name };
+      const next = { ...knownUser, email: knownUser.email || knownUser.userId };
       sessionStorage.setItem("pfa-session", JSON.stringify(next));
       setSession(next);
       return true;
     }
-    return false;
+    throw new Error("Invalid login details");
   }
 
-  function logout() {
+  async function register(email, password, name) {
+    const cleanEmail = email.trim().toLowerCase();
+    if (auth && db) {
+      const credential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+      await resolveUserSession(credential.user, name);
+      return true;
+    }
+
+    const adminEmail = env("VITE_ADMIN_USER_ID", "aroragagan09@gmail.com").toLowerCase();
+    const next = {
+      id: id("user"),
+      email: cleanEmail,
+      userId: cleanEmail,
+      name: name || cleanEmail,
+      role: cleanEmail === adminEmail ? "admin" : "user"
+    };
+    actions.upsertUser(next);
+    sessionStorage.setItem("pfa-session", JSON.stringify(next));
+    setSession(next);
+    return true;
+  }
+
+  async function logout() {
+    if (auth) await signOut(auth).catch(() => {});
     sessionStorage.removeItem("pfa-session");
     setSession(null);
     setPage("dashboard");
   }
 
-  if (!session) return <LoginPage onLogin={login} />;
+  if (!session) return <LoginPage onLogin={login} onRegister={register} />;
 
   return (
     <div className="app">
@@ -311,14 +385,29 @@ function App() {
   );
 }
 
-function LoginPage({ onLogin }) {
-  const [userId, setUserId] = useState("");
+function LoginPage({ onLogin, onRegister }) {
+  const [mode, setMode] = useState("login");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault();
-    setError(onLogin(userId, password) ? "" : "Invalid login details");
+    setIsSubmitting(true);
+    setError("");
+    try {
+      if (mode === "register") {
+        await onRegister(email, password, name);
+      } else {
+        await onLogin(email, password);
+      }
+    } catch (authError) {
+      setError(authError?.message || "Could not continue. Check your email and password.");
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -326,19 +415,29 @@ function LoginPage({ onLogin }) {
       <section className="loginPanel">
         <img className="loginLogo" src="/logo.svg" alt="People for Animals" />
         <p className="eyebrow">People for Animals</p>
-        <h1>Inventory Login</h1>
+        <h1>{mode === "register" ? "Create Account" : "Inventory Login"}</h1>
+        <div className="segmented">
+          <button type="button" className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>Login</button>
+          <button type="button" className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>Register</button>
+        </div>
         <form onSubmit={submit} className="form">
+          {mode === "register" && (
+            <label>
+              Name
+              <input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" />
+            </label>
+          )}
           <label>
-            User ID
-            <input value={userId} onChange={(event) => setUserId(event.target.value)} autoComplete="username" />
+            Email
+              <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" />
           </label>
           <label>
             Password
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" />
+            <input required type="password" minLength="6" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "register" ? "new-password" : "current-password"} />
           </label>
           {error && <p className="error">{error}</p>}
-          <button className="primary" type="submit">
-            <Shield size={18} /> Login
+          <button className="primary" type="submit" disabled={isSubmitting}>
+            <Shield size={18} /> {isSubmitting ? "Please wait..." : mode === "register" ? "Register" : "Login"}
           </button>
         </form>
       </section>
@@ -424,6 +523,11 @@ function Dashboard({ store, actions, isAdmin }) {
                   <button title="Download barcode" onClick={() => downloadQrSvg(medicine)}>
                     <Download size={16} />
                   </button>
+                  {isAdmin && (
+                    <button title="Delete medicine" onClick={() => setDialog({ mode: "delete", medicine })}>
+                      <Trash2 size={16} />
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -454,8 +558,8 @@ function Dashboard({ store, actions, isAdmin }) {
           subclasses={store.subclasses}
           dogs={store.dogs}
           onClose={() => setDialog(null)}
-          onSave={(payload) => {
-            actions.updateMedicine(dialog.medicine.serialNumber, payload);
+          onSave={async (payload) => {
+            await actions.updateMedicine(dialog.medicine.serialNumber, payload);
             return { ...dialog.medicine, ...payload };
           }}
         />
@@ -464,8 +568,19 @@ function Dashboard({ store, actions, isAdmin }) {
         <StockDialog
           medicine={dialog.medicine}
           onClose={() => setDialog(null)}
-          onSave={(quantity) => {
-            actions.updateMedicine(dialog.medicine.serialNumber, { quantity });
+          onSave={async (quantity) => {
+            await actions.updateMedicine(dialog.medicine.serialNumber, { quantity });
+            setDialog(null);
+          }}
+        />
+      )}
+      {dialog?.mode === "delete" && (
+        <ConfirmDialog
+          title="Delete Medicine"
+          message={`Delete ${dialog.medicine.name} from the database?`}
+          onClose={() => setDialog(null)}
+          onConfirm={async () => {
+            await actions.deleteMedicine(dialog.medicine.serialNumber);
             setDialog(null);
           }}
         />
@@ -554,6 +669,21 @@ function MedicineDialog({ title, medicine, types, subclasses, dogs, onClose, onS
 
 function StockDialog({ medicine, onClose, onSave }) {
   const [quantity, setQuantity] = useState(medicine.quantity);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    setIsSaving(true);
+    setError("");
+    try {
+      await onSave(quantity);
+    } catch (saveError) {
+      setError(saveError?.message || "Could not update this quantity.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   return (
     <Dialog onClose={onClose} title="Update Stock">
       <div className="stockHeader">
@@ -564,8 +694,9 @@ function StockDialog({ medicine, onClose, onSave }) {
         Quantity
         <input type="number" min="0" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
       </label>
-      <button className="primary full" onClick={() => onSave(quantity)}>
-        <Check size={18} /> Update Quantity
+      {error && <p className="error">{error}</p>}
+      <button className="primary full" onClick={submit} disabled={isSaving}>
+        <Check size={18} /> {isSaving ? "Updating..." : "Update Quantity"}
       </button>
     </Dialog>
   );
@@ -604,8 +735,8 @@ function ScanPage({ medicines, onUpdate }) {
         <StockDialog
           medicine={medicine}
           onClose={() => setMedicine(null)}
-          onSave={(quantity) => {
-            onUpdate(medicine.serialNumber, { quantity });
+          onSave={async (quantity) => {
+            await onUpdate(medicine.serialNumber, { quantity });
             setMedicine(null);
           }}
         />
@@ -718,14 +849,14 @@ function EditableList({ title, list, values, actions }) {
 }
 
 function AdminPage({ users, actions }) {
-  const [form, setForm] = useState({ name: "", userId: "", role: "user" });
   return (
-    <section className="split">
+    <section className="pageStack">
       <div className="listPanel">
         <h2>Users</h2>
+        <p className="helperText">Users register from the login screen. Admins can promote or demote registered users here.</p>
         {users.map((user) => (
           <div className="listRow" key={user.id}>
-            <span><strong>{user.name}</strong><small>{user.userId}</small></span>
+            <span><strong>{user.name}</strong><small>{user.email || user.userId}</small></span>
             <select value={user.role} onChange={(event) => actions.updateUser(user.id, { role: event.target.value })}>
               <option value="user">User</option>
               <option value="admin">Admin</option>
@@ -733,13 +864,6 @@ function AdminPage({ users, actions }) {
           </div>
         ))}
       </div>
-      <form className="form sideForm" onSubmit={(event) => { event.preventDefault(); actions.addUser(form); setForm({ name: "", userId: "", role: "user" }); }}>
-        <h2>Add User</h2>
-        <label>Name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
-        <label>User ID<input required value={form.userId} onChange={(event) => setForm({ ...form, userId: event.target.value })} /></label>
-        <label>Role<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="user">User</option><option value="admin">Admin</option></select></label>
-        <button className="primary"><Plus size={18} /> Add User</button>
-      </form>
     </section>
   );
 }
@@ -755,6 +879,36 @@ function Dialog({ title, children, onClose }) {
         {children}
       </section>
     </div>
+  );
+}
+
+function ConfirmDialog({ title, message, onClose, onConfirm }) {
+  const [isWorking, setIsWorking] = useState(false);
+  const [error, setError] = useState("");
+
+  async function confirm() {
+    setIsWorking(true);
+    setError("");
+    try {
+      await onConfirm();
+    } catch (confirmError) {
+      setError(confirmError?.message || "Could not complete this action.");
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  return (
+    <Dialog title={title} onClose={onClose}>
+      <p className="confirmMessage">{message}</p>
+      {error && <p className="error">{error}</p>}
+      <div className="confirmActions">
+        <button type="button" onClick={onClose} disabled={isWorking}>Cancel</button>
+        <button type="button" className="danger" onClick={confirm} disabled={isWorking}>
+          <Trash2 size={18} /> {isWorking ? "Deleting..." : "Delete"}
+        </button>
+      </div>
+    </Dialog>
   );
 }
 

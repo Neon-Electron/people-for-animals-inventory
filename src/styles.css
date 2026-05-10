@@ -52,6 +52,17 @@ button:disabled {
   background: #155a38;
 }
 
+.danger {
+  background: #9f2d20;
+  border-color: #9f2d20;
+  color: #ffffff;
+  gap: 8px;
+}
+
+.danger:hover {
+  background: #832116;
+}
+
 .secondary {
   background: #fff7e8;
   border-color: #d69c35;
@@ -267,6 +278,16 @@ td small,
   margin-bottom: 14px;
 }
 
+.confirmMessage {
+  margin: 0 0 16px;
+}
+
+.confirmActions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .form {
   display: grid;
   gap: 12px;
@@ -364,6 +385,11 @@ td small,
   padding: 8px 10px;
 }
 
+.helperText {
+  color: #66756d;
+  margin: 0;
+}
+
 .inlineForm input {
   flex: 1;
 }
@@ -393,6 +419,22 @@ td small,
 
 .loginPanel h1 {
   margin-bottom: 18px;
+}
+
+.segmented {
+  border: 1px solid #ccd5cb;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 16px;
+}
+
+.segmented button {
+  border: 0;
+}
+
+.segmented button.active {
+  background: #17201b;
+  color: #ffffff;
 }
 
 .error {
