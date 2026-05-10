@@ -760,11 +760,12 @@ function Dialog({ title, children, onClose }) {
 
 function downloadQrSvg(medicine) {
   const safeName = medicine.name.replace(/[^\w-]+/g, "-").toLowerCase();
+  const qrHref = escapeXml(qrUrl(medicine.serialNumber, 320));
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="510" viewBox="0 0 420 510">
     <rect width="420" height="510" fill="#ffffff"/>
     <text x="210" y="48" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#17201b">${escapeXml(medicine.name)}</text>
-    <image href="${qrUrl(medicine.serialNumber, 320)}" x="50" y="78" width="320" height="320"/>
-    <text x="210" y="440" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="#56615b">${medicine.serialNumber}</text>
+    <image href="${qrHref}" x="50" y="78" width="320" height="320"/>
+    <text x="210" y="440" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="#56615b">${escapeXml(medicine.serialNumber)}</text>
     <text x="210" y="470" text-anchor="middle" font-family="Arial, sans-serif" font-size="15" fill="#17201b">People for Animals</text>
   </svg>`;
   const blob = new Blob([svg], { type: "image/svg+xml" });
