@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-labelledby="title desc">
+  <title id="title">People for Animals logo</title>
+  <desc id="desc">A white bird above two caring hands with a blue background and TIET text.</desc>
+  <rect width="240" height="240" fill="#fff"/>
+  <path d="M92 28c36-16 74-5 91 30 16 34 7 78-18 106-26 28-66 33-103 21L72 76c3-20 8-37 20-48Z" fill="#238fc7"/>
+  <path d="M53 68c16 10 31 14 48 15 24 2 49-6 75-24-13 24-36 45-68 53-24 5-50-3-73-25 1-12 7-18 18-19Z" fill="#fff" stroke="#111" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M37 57c18 17 39 25 64 26M64 39c9 19 23 34 43 44M91 30c3 19 11 36 24 50" fill="none" stroke="#111" stroke-width="6" stroke-linecap="round"/>
+  <path d="M113 80c9-21 30-35 57-42-10 13-13 28-8 45 12 2 25 7 37 15-23 12-48 16-76 10" fill="#fff" stroke="#111" stroke-width="6" stroke-linejoin="round"/>
+  <circle cx="138" cy="75" r="4" fill="#111"/>
+  <path d="M143 91c13-1 25-4 37-10" fill="none" stroke="#111" stroke-width="5" stroke-linecap="round"/>
+  <path d="M46 139c25-22 49-17 72 15l39-11c12-3 22 2 26 12l-55 31H73c-14 0-27-5-38-14l-18-15c9-7 19-13 29-18Z" fill="#fff" stroke="#111" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M15 174c20-11 41-10 63 4h47M66 134c13 5 25 15 36 30" fill="none" stroke="#111" stroke-width="6" stroke-linecap="round"/>
+  <path d="M187 94v84" fill="none" stroke="#111" stroke-width="6" stroke-linecap="round"/>
+  <rect x="58" y="197" width="124" height="32" fill="#fff" stroke="#111" stroke-width="5"/>
+  <text x="120" y="222" text-anchor="middle" font-family="Arial Black, Impact, sans-serif" font-size="28" fill="#111" letter-spacing="1">TIET</text>
+</svg>
