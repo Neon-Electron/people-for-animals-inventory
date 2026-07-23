@@ -7,6 +7,7 @@ import {
   Dog,
   Download,
   Edit3,
+  History,
   LogOut,
   PackagePlus,
   Plus,
@@ -97,6 +98,7 @@ function useInventoryStore() {
     return {
       medicines: [],
       dogs: seedDogs,
+      history: [],
       users: seedUsers,
       types: defaultTypes,
       subclasses: defaultSubclasses
@@ -121,6 +123,10 @@ function useInventoryStore() {
         const users = snapshot.docs.map((item) => item.data());
         if (users.length) setState((current) => ({ ...current, users }));
       }),
+      onSnapshot(collection(db, "history"), (snapshot) => {
+        const history = snapshot.docs.map((item) => item.data()).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+        setState((current) => ({ ...current, history }));
+      }),
       onSnapshot(collection(db, "settings"), (snapshot) => {
         const settings = Object.fromEntries(snapshot.docs.map((item) => [item.id, item.data().values || []]));
         setState((current) => ({ ...current, ...settings }));
@@ -131,7 +137,15 @@ function useInventoryStore() {
 
   const api = useMemo(
     () => ({
-      async addMedicine(payload) {
+      async addHistory(entry) {
+        const historyEntry = { ...entry, id: id("history"), createdAt: new Date().toISOString() };
+        if (db) {
+          await setDoc(doc(db, "history", historyEntry.id), historyEntry);
+          return;
+        }
+        setState((current) => ({ ...current, history: [historyEntry, ...(current.history || [])] }));
+      },
+      async addMedicine(payload, actor) {
         const provisionalId = id("med");
         const medicine = {
           ...payload,
@@ -147,19 +161,48 @@ function useInventoryStore() {
           const docRef = await addDoc(collection(db, "medicines"), medicine);
           const firestoreMedicine = { ...medicine, id: docRef.id, serialNumber: docRef.id };
           await setDoc(docRef, firestoreMedicine);
+          await api.addHistory({
+            action: "added",
+            medicineId: firestoreMedicine.serialNumber,
+            medicineName: firestoreMedicine.name,
+            actorEmail: actor?.email || "unknown",
+            actorName: actor?.name || actor?.email || "Unknown",
+            details: `Added ${firestoreMedicine.name} with quantity ${firestoreMedicine.quantity}`
+          });
           return firestoreMedicine;
         }
         setState((current) => ({ ...current, medicines: [medicine, ...current.medicines] }));
+        await api.addHistory({
+          action: "added",
+          medicineId: medicine.serialNumber,
+          medicineName: medicine.name,
+          actorEmail: actor?.email || "unknown",
+          actorName: actor?.name || actor?.email || "Unknown",
+          details: `Added ${medicine.name} with quantity ${medicine.quantity}`
+        });
         return medicine;
       },
-      async updateMedicine(serialNumber, patch) {
+      async updateMedicine(serialNumber, patch, actor) {
+        const before = state.medicines.find((medicine) => medicine.serialNumber === serialNumber);
         if (db) {
+          const medicineRef = doc(db, "medicines", serialNumber);
+          const currentDoc = await getDoc(medicineRef);
+          const currentMedicine = currentDoc.exists() ? currentDoc.data() : before;
           const updatePayload = {
             ...patch,
             ...(patch.quantity === undefined ? {} : { quantity: Number(patch.quantity) }),
             updatedAt: new Date().toISOString()
           };
-          await updateDoc(doc(db, "medicines", serialNumber), updatePayload);
+          await updateDoc(medicineRef, updatePayload);
+          const after = { ...(currentMedicine || {}), ...updatePayload };
+          await api.addHistory({
+            action: patch.quantity !== undefined && Object.keys(patch).length === 1 ? "quantity updated" : "updated",
+            medicineId: serialNumber,
+            medicineName: after.name || currentMedicine?.name || serialNumber,
+            actorEmail: actor?.email || "unknown",
+            actorName: actor?.name || actor?.email || "Unknown",
+            details: describeMedicineChange(currentMedicine, after, patch)
+          });
           return;
         }
         setState((current) => ({
@@ -170,16 +213,45 @@ function useInventoryStore() {
               : medicine
           )
         }));
+        const after = { ...(before || {}), ...patch, quantity: Number(patch.quantity ?? before?.quantity ?? 0) };
+        await api.addHistory({
+          action: patch.quantity !== undefined && Object.keys(patch).length === 1 ? "quantity updated" : "updated",
+          medicineId: serialNumber,
+          medicineName: after.name || serialNumber,
+          actorEmail: actor?.email || "unknown",
+          actorName: actor?.name || actor?.email || "Unknown",
+          details: describeMedicineChange(before, after, patch)
+        });
       },
-      async deleteMedicine(serialNumber) {
+      async deleteMedicine(serialNumber, actor) {
+        const before = state.medicines.find((medicine) => medicine.serialNumber === serialNumber);
         if (db) {
-          await deleteDoc(doc(db, "medicines", serialNumber));
+          const medicineRef = doc(db, "medicines", serialNumber);
+          const currentDoc = await getDoc(medicineRef);
+          const currentMedicine = currentDoc.exists() ? currentDoc.data() : before;
+          await deleteDoc(medicineRef);
+          await api.addHistory({
+            action: "deleted",
+            medicineId: serialNumber,
+            medicineName: currentMedicine?.name || serialNumber,
+            actorEmail: actor?.email || "unknown",
+            actorName: actor?.name || actor?.email || "Unknown",
+            details: `Deleted ${currentMedicine?.name || serialNumber}`
+          });
           return;
         }
         setState((current) => ({
           ...current,
           medicines: current.medicines.filter((medicine) => medicine.serialNumber !== serialNumber)
         }));
+        await api.addHistory({
+          action: "deleted",
+          medicineId: serialNumber,
+          medicineName: before?.name || serialNumber,
+          actorEmail: actor?.email || "unknown",
+          actorName: actor?.name || actor?.email || "Unknown",
+          details: `Deleted ${before?.name || serialNumber}`
+        });
       },
       addListItem(list, value) {
         const clean = value.trim();
@@ -206,9 +278,9 @@ function useInventoryStore() {
         }
         setState((current) => ({ ...current, dogs: [...current.dogs, nextDog] }));
       },
-      updateDog(dogId, patch) {
+      async updateDog(dogId, patch) {
         if (db) {
-          updateDoc(doc(db, "dogs", dogId), patch);
+          await updateDoc(doc(db, "dogs", dogId), patch);
           return;
         }
         setState((current) => ({
@@ -231,9 +303,14 @@ function useInventoryStore() {
           )
         }));
       },
-      updateUser(userId, patch) {
+      async updateUser(userId, patch) {
+        const protectedEmail = env("VITE_ADMIN_USER_ID", "aroragagan09@gmail.com").toLowerCase();
+        const target = state.users.find((user) => user.id === userId);
+        if ((target?.email || target?.userId || "").toLowerCase() === protectedEmail) {
+          throw new Error("The configured primary admin cannot be edited.");
+        }
         if (db) {
-          updateDoc(doc(db, "users", userId), patch);
+          await updateDoc(doc(db, "users", userId), patch);
           return;
         }
         setState((current) => ({
@@ -292,7 +369,7 @@ function App() {
       name: existing.name || fallbackName || email,
       role: isConfiguredAdmin ? "admin" : existing.role || "user"
     };
-    if (!profile.exists() || isConfiguredAdmin) {
+    if (!profile.exists()) {
       await setDoc(userRef, next, { merge: true });
     }
     sessionStorage.setItem("pfa-session", JSON.stringify(next));
@@ -402,14 +479,16 @@ function App() {
         <Tab active={page === "scan"} onClick={() => setPage("scan")} icon={<Camera size={18} />} label="Scan" />
         <Tab active={page === "dogs"} onClick={() => setPage("dogs")} icon={<Dog size={18} />} label="Dogs" />
         {isAdmin && <Tab active={page === "data"} onClick={() => setPage("data")} icon={<SlidersHorizontal size={18} />} label="Data" />}
+        {isAdmin && <Tab active={page === "history"} onClick={() => setPage("history")} icon={<History size={18} />} label="History" />}
         {isAdmin && <Tab active={page === "admin"} onClick={() => setPage("admin")} icon={<Users size={18} />} label="Admin" />}
       </nav>
 
       <main>
-        {page === "dashboard" && <Dashboard store={store} actions={actions} isAdmin={isAdmin} />}
-        {page === "scan" && <ScanPage medicines={store.medicines} onUpdate={actions.updateMedicine} />}
+        {page === "dashboard" && <Dashboard store={store} actions={actions} isAdmin={isAdmin} session={session} />}
+        {page === "scan" && <ScanPage medicines={store.medicines} onUpdate={actions.updateMedicine} session={session} />}
         {page === "dogs" && <DogsPage dogs={store.dogs} actions={actions} isAdmin={isAdmin} />}
         {page === "data" && isAdmin && <DataPage store={store} actions={actions} />}
+        {page === "history" && isAdmin && <HistoryPage history={store.history || []} />}
         {page === "admin" && isAdmin && <AdminPage users={store.users} actions={actions} />}
       </main>
     </div>
@@ -485,7 +564,7 @@ function Tab({ active, onClick, icon, label }) {
   );
 }
 
-function Dashboard({ store, actions, isAdmin }) {
+function Dashboard({ store, actions, isAdmin, session }) {
   const [query, setQuery] = useState("");
   const [type, setType] = useState("All");
   const [dialog, setDialog] = useState(null);
@@ -578,7 +657,7 @@ function Dashboard({ store, actions, isAdmin }) {
           subclasses={store.subclasses}
           dogs={store.dogs}
           onClose={() => setDialog(null)}
-          onSave={(payload) => actions.addMedicine(payload)}
+          onSave={(payload) => actions.addMedicine(payload, session)}
         />
       )}
       {dialog?.mode === "edit" && (
@@ -590,7 +669,7 @@ function Dashboard({ store, actions, isAdmin }) {
           dogs={store.dogs}
           onClose={() => setDialog(null)}
           onSave={async (payload) => {
-            await actions.updateMedicine(dialog.medicine.serialNumber, payload);
+            await actions.updateMedicine(dialog.medicine.serialNumber, payload, session);
             return { ...dialog.medicine, ...payload };
           }}
         />
@@ -600,7 +679,7 @@ function Dashboard({ store, actions, isAdmin }) {
           medicine={dialog.medicine}
           onClose={() => setDialog(null)}
           onSave={async (quantity) => {
-            await actions.updateMedicine(dialog.medicine.serialNumber, { quantity });
+            await actions.updateMedicine(dialog.medicine.serialNumber, { quantity }, session);
             setDialog(null);
           }}
         />
@@ -611,7 +690,7 @@ function Dashboard({ store, actions, isAdmin }) {
           message={`Delete ${dialog.medicine.name} from the database?`}
           onClose={() => setDialog(null)}
           onConfirm={async () => {
-            await actions.deleteMedicine(dialog.medicine.serialNumber);
+            await actions.deleteMedicine(dialog.medicine.serialNumber, session);
             setDialog(null);
           }}
         />
@@ -743,7 +822,7 @@ function QrCard({ medicine }) {
   );
 }
 
-function ScanPage({ medicines, onUpdate }) {
+function ScanPage({ medicines, onUpdate, session }) {
   const [scanned, setScanned] = useState("");
   const [medicine, setMedicine] = useState(null);
   const [message, setMessage] = useState("");
@@ -767,7 +846,7 @@ function ScanPage({ medicines, onUpdate }) {
           medicine={medicine}
           onClose={() => setMedicine(null)}
           onSave={async (quantity) => {
-            await onUpdate(medicine.serialNumber, { quantity });
+            await onUpdate(medicine.serialNumber, { quantity }, session);
             setMedicine(null);
           }}
         />
@@ -828,14 +907,49 @@ function CameraScanner({ onScan }) {
 function DogsPage({ dogs, actions, isAdmin }) {
   const [name, setName] = useState("");
   const [kennel, setKennel] = useState("");
+  const [editingDogId, setEditingDogId] = useState("");
+  const [editDog, setEditDog] = useState({ name: "", kennel: "" });
+
+  function startEdit(dog) {
+    setEditingDogId(dog.id);
+    setEditDog({ name: dog.name, kennel: dog.kennel });
+  }
+
+  async function saveDog(dogId) {
+    await actions.updateDog(dogId, editDog);
+    setEditingDogId("");
+    setEditDog({ name: "", kennel: "" });
+  }
+
   return (
     <section className="split">
       <div className="listPanel">
         <h2>Dogs</h2>
         {dogs.map((dog) => (
           <div className="listRow" key={dog.id}>
-            <span><strong>{dog.name}</strong><small>{dog.kennel}</small></span>
-            {isAdmin && <button onClick={() => actions.removeDog(dog.id)}><Trash2 size={16} /></button>}
+            {editingDogId === dog.id ? (
+              <div className="rowEdit">
+                <input value={editDog.name} onChange={(event) => setEditDog({ ...editDog, name: event.target.value })} />
+                <input value={editDog.kennel} onChange={(event) => setEditDog({ ...editDog, kennel: event.target.value })} />
+              </div>
+            ) : (
+              <span><strong>{dog.name}</strong><small>{dog.kennel}</small></span>
+            )}
+            {isAdmin && (
+              <div className="rowActions">
+                {editingDogId === dog.id ? (
+                  <>
+                    <button title="Save dog" onClick={() => saveDog(dog.id)}><Check size={16} /></button>
+                    <button title="Cancel edit" onClick={() => setEditingDogId("")}><X size={16} /></button>
+                  </>
+                ) : (
+                  <>
+                    <button title="Edit dog" onClick={() => startEdit(dog)}><Edit3 size={16} /></button>
+                    <button title="Remove dog" onClick={() => actions.removeDog(dog.id)}><Trash2 size={16} /></button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -880,18 +994,49 @@ function EditableList({ title, list, values, actions }) {
 }
 
 function AdminPage({ users, actions }) {
+  const protectedAdminEmail = env("VITE_ADMIN_USER_ID", "aroragagan09@gmail.com").toLowerCase();
   return (
     <section className="pageStack">
       <div className="listPanel">
         <h2>Users</h2>
-        <p className="helperText">Users register from the login screen. Admins can promote or demote registered users here.</p>
+        <p className="helperText">Users register from the login screen. Admins can promote or demote registered users here. The configured primary admin is locked.</p>
         {users.map((user) => (
           <div className="listRow" key={user.id}>
-            <span><strong>{user.name}</strong><small>{user.email || user.userId}</small></span>
-            <select value={user.role} onChange={(event) => actions.updateUser(user.id, { role: event.target.value })}>
-              <option value="user">User</option>
-              <option value="admin">Admin</option>
-            </select>
+            <span>
+              <strong>{user.name}</strong>
+              <small>{user.email || user.userId}</small>
+            </span>
+            {(user.email || user.userId || "").toLowerCase() === protectedAdminEmail ? (
+              <span className="lockedRole">Primary Admin</span>
+            ) : (
+              <select value={user.role} onChange={(event) => actions.updateUser(user.id, { role: event.target.value })}>
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function HistoryPage({ history }) {
+  return (
+    <section className="pageStack">
+      <div className="listPanel">
+        <h2>Medicine History</h2>
+        {!history.length && <p className="helperText">No medicine changes have been recorded yet.</p>}
+        {history.map((entry) => (
+          <div className="historyRow" key={entry.id}>
+            <div>
+              <strong>{entry.medicineName || entry.medicineId}</strong>
+              <small>{entry.details}</small>
+            </div>
+            <div className="historyMeta">
+              <span className="pill">{entry.action}</span>
+              <small>{entry.actorName || entry.actorEmail} | {formatDateTime(entry.createdAt)}</small>
+            </div>
           </div>
         ))}
       </div>
@@ -959,6 +1104,24 @@ function downloadQrSvg(medicine) {
   anchor.download = `${safeName || "medicine"}-qr.svg`;
   anchor.click();
   URL.revokeObjectURL(anchor.href);
+}
+
+function describeMedicineChange(before = {}, after = {}, patch = {}) {
+  if (patch.quantity !== undefined && Object.keys(patch).length === 1) {
+    return `Quantity changed from ${before?.quantity ?? "unknown"} to ${after.quantity}`;
+  }
+  const changed = Object.keys(patch)
+    .filter((key) => key !== "updatedAt")
+    .map((key) => `${key}: ${before?.[key] ?? "blank"} -> ${after?.[key] ?? "blank"}`);
+  return changed.length ? changed.join("; ") : "Medicine details updated";
+}
+
+function formatDateTime(value) {
+  if (!value) return "";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
 }
 
 function escapeXml(value) {

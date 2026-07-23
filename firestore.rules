@@ -39,6 +39,14 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    match /history/{document} {
+      allow read: if isAdmin();
+      allow create: if signedIn()
+        && request.resource.data.actorEmail == request.auth.token.email
+        && request.resource.data.keys().hasAll(["id", "action", "medicineId", "medicineName", "actorEmail", "actorName", "details", "createdAt"]);
+      allow update, delete: if false;
+    }
+
     match /users/{userId} {
       allow read: if signedIn();
       allow create: if signedIn()
@@ -48,10 +56,11 @@ service cloud.firestore {
           request.resource.data.role == "user"
           || (request.resource.data.role == "admin" && isConfiguredAdminEmail())
         );
-      allow update: if isAdmin()
+      allow update: if (isAdmin() && resource.data.email != "aroragagan09@gmail.com")
         || (
           signedIn()
           && request.auth.uid == userId
+          && resource.data.email != "aroragagan09@gmail.com"
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["name", "email", "userId", "id"])
           && request.resource.data.email == resource.data.email
           && request.resource.data.userId == resource.data.userId
