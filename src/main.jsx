@@ -284,17 +284,40 @@ function App() {
     const userRef = doc(db, "users", firebaseUser.uid);
     const profile = await getDoc(userRef);
     const existing = profile.exists() ? profile.data() : {};
+    const isConfiguredAdmin = email === adminEmail;
     const next = {
       id: firebaseUser.uid,
       email,
       userId: email,
       name: existing.name || fallbackName || email,
-      role: email === adminEmail ? "admin" : existing.role || "user"
+      role: isConfiguredAdmin ? "admin" : existing.role || "user"
     };
-    await setDoc(userRef, next, { merge: true });
+    if (!profile.exists() || isConfiguredAdmin) {
+      await setDoc(userRef, next, { merge: true });
+    }
     sessionStorage.setItem("pfa-session", JSON.stringify(next));
     setSession(next);
     return next;
+  }
+
+  function formatAuthError(authError) {
+    const code = authError?.code || "";
+    if (code === "auth/configuration-not-found") {
+      return "Firebase Authentication is not enabled for this project. In Firebase Console, enable Authentication > Sign-in method > Email/Password, then redeploy if you changed env vars.";
+    }
+    if (code === "auth/invalid-credential" || code === "auth/user-not-found" || code === "auth/wrong-password") {
+      return "Invalid email or password.";
+    }
+    if (code === "auth/email-already-in-use") {
+      return "An account with this email already exists. Use Login instead.";
+    }
+    if (code === "auth/weak-password") {
+      return "Password should be at least 6 characters.";
+    }
+    if (code === "permission-denied") {
+      return "Login succeeded, but Firestore permissions blocked your user profile. Publish the latest firestore.rules file in Firebase.";
+    }
+    return authError?.message || "Could not continue. Check your email and password.";
   }
 
   async function login(email, password) {
@@ -404,7 +427,7 @@ function LoginPage({ onLogin, onRegister }) {
         await onLogin(email, password);
       }
     } catch (authError) {
-      setError(authError?.message || "Could not continue. Check your email and password.");
+      setError(formatAuthError(authError));
     } finally {
       setIsSubmitting(false);
     }
