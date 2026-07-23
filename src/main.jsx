@@ -349,12 +349,20 @@ function App() {
   async function register(email, password, name) {
     const cleanEmail = email.trim().toLowerCase();
     if (auth && db) {
+      const duplicate = await getDocs(query(collection(db, "users"), where("email", "==", cleanEmail)));
+      if (!duplicate.empty) {
+        throw new Error("An account with this email already exists. Use Login instead.");
+      }
       const credential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
       await resolveUserSession(credential.user, name);
       return true;
     }
 
     const adminEmail = env("VITE_ADMIN_USER_ID", "aroragagan09@gmail.com").toLowerCase();
+    const duplicate = store.users.some((user) => (user.email || user.userId || "").toLowerCase() === cleanEmail);
+    if (duplicate) {
+      throw new Error("An account with this email already exists. Use Login instead.");
+    }
     const next = {
       id: id("user"),
       email: cleanEmail,
