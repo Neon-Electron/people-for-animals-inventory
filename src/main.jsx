@@ -171,7 +171,12 @@ function useInventoryStore(session) {
             medicineName: firestoreMedicine.name,
             actorEmail: actor?.email || "unknown",
             actorName: actor?.name || actor?.email || "Unknown",
-            details: `Added ${firestoreMedicine.name} with quantity ${firestoreMedicine.quantity}`
+            details: `Added ${firestoreMedicine.name} with quantity ${firestoreMedicine.quantity}`,
+            changes: [
+              { field: "Quantity", before: "New medicine", after: firestoreMedicine.quantity },
+              { field: "Type", before: "New medicine", after: firestoreMedicine.type },
+              { field: "Expiry date", before: "New medicine", after: firestoreMedicine.expiryDate }
+            ]
           });
           return firestoreMedicine;
         }
@@ -182,7 +187,12 @@ function useInventoryStore(session) {
           medicineName: medicine.name,
           actorEmail: actor?.email || "unknown",
           actorName: actor?.name || actor?.email || "Unknown",
-          details: `Added ${medicine.name} with quantity ${medicine.quantity}`
+          details: `Added ${medicine.name} with quantity ${medicine.quantity}`,
+          changes: [
+            { field: "Quantity", before: "New medicine", after: medicine.quantity },
+            { field: "Type", before: "New medicine", after: medicine.type },
+            { field: "Expiry date", before: "New medicine", after: medicine.expiryDate }
+          ]
         });
         return medicine;
       },
@@ -199,13 +209,15 @@ function useInventoryStore(session) {
           };
           await updateDoc(medicineRef, updatePayload);
           const after = { ...(currentMedicine || {}), ...updatePayload };
+          const changes = buildMedicineChanges(currentMedicine, after, patch, state.dogs);
           await api.addHistory({
-            action: patch.quantity !== undefined && Object.keys(patch).length === 1 ? "quantity updated" : "updated",
+            action: getHistoryAction(patch),
             medicineId: serialNumber,
             medicineName: after.name || currentMedicine?.name || serialNumber,
             actorEmail: actor?.email || "unknown",
             actorName: actor?.name || actor?.email || "Unknown",
-            details: describeMedicineChange(currentMedicine, after, patch)
+            details: summarizeChanges(changes),
+            changes
           });
           return;
         }
@@ -218,13 +230,15 @@ function useInventoryStore(session) {
           )
         }));
         const after = { ...(before || {}), ...patch, quantity: Number(patch.quantity ?? before?.quantity ?? 0) };
+        const changes = buildMedicineChanges(before, after, patch, state.dogs);
         await api.addHistory({
-          action: patch.quantity !== undefined && Object.keys(patch).length === 1 ? "quantity updated" : "updated",
+          action: getHistoryAction(patch),
           medicineId: serialNumber,
           medicineName: after.name || serialNumber,
           actorEmail: actor?.email || "unknown",
           actorName: actor?.name || actor?.email || "Unknown",
-          details: describeMedicineChange(before, after, patch)
+          details: summarizeChanges(changes),
+          changes
         });
       },
       async deleteMedicine(serialNumber, actor) {
@@ -240,7 +254,8 @@ function useInventoryStore(session) {
             medicineName: currentMedicine?.name || serialNumber,
             actorEmail: actor?.email || "unknown",
             actorName: actor?.name || actor?.email || "Unknown",
-            details: `Deleted ${currentMedicine?.name || serialNumber}`
+            details: `Deleted ${currentMedicine?.name || serialNumber}`,
+            changes: [{ field: "Medicine", before: currentMedicine?.name || serialNumber, after: "Deleted" }]
           });
           return;
         }
@@ -254,7 +269,8 @@ function useInventoryStore(session) {
           medicineName: before?.name || serialNumber,
           actorEmail: actor?.email || "unknown",
           actorName: actor?.name || actor?.email || "Unknown",
-          details: `Deleted ${before?.name || serialNumber}`
+          details: `Deleted ${before?.name || serialNumber}`,
+          changes: [{ field: "Medicine", before: before?.name || serialNumber, after: "Deleted" }]
         });
       },
       addListItem(list, value) {
@@ -1101,13 +1117,27 @@ function HistoryPage({ history }) {
         {!history.length && <p className="helperText">No medicine changes have been recorded yet.</p>}
         {history.map((entry) => (
           <div className="historyRow" key={entry.id}>
-            <div>
-              <strong>{entry.medicineName || entry.medicineId}</strong>
-              <small>{entry.details}</small>
+            <div className="historyMain">
+              <div className="historyTitleLine">
+                <span className={`historyBadge ${historyActionClass(entry.action)}`}>{formatHistoryAction(entry.action)}</span>
+                <strong>{entry.medicineName || entry.medicineId}</strong>
+              </div>
+              <small>
+                By {entry.actorName || entry.actorEmail || "Unknown user"} on {formatDateTime(entry.createdAt)}
+              </small>
+              <div className="changeList">
+                {getDisplayChanges(entry).map((change, index) => (
+                  <div className="changeItem" key={`${entry.id}-${change.field}-${index}`}>
+                    <span>{change.field}</span>
+                    <strong>{formatChangeValue(change.before)}</strong>
+                    <span className="changeArrow">to</span>
+                    <strong>{formatChangeValue(change.after)}</strong>
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="historyMeta">
-              <span className="pill">{entry.action}</span>
-              <small>{entry.actorName || entry.actorEmail} | {formatDateTime(entry.createdAt)}</small>
+              <small>{entry.medicineId}</small>
             </div>
           </div>
         ))}
@@ -1178,14 +1208,98 @@ function downloadQrSvg(medicine) {
   URL.revokeObjectURL(anchor.href);
 }
 
-function describeMedicineChange(before = {}, after = {}, patch = {}) {
-  if (patch.quantity !== undefined && Object.keys(patch).length === 1) {
-    return `Quantity changed from ${before?.quantity ?? "unknown"} to ${after.quantity}`;
-  }
-  const changed = Object.keys(patch)
+function getHistoryAction(patch = {}) {
+  const keys = Object.keys(patch).filter((key) => key !== "updatedAt");
+  if (keys.length === 1 && keys[0] === "quantity") return "quantity updated";
+  if (keys.every((key) => ["status", "holdDogId"].includes(key))) return "hold updated";
+  return "updated";
+}
+
+function buildMedicineChanges(before = {}, after = {}, patch = {}, dogs = []) {
+  const dogById = Object.fromEntries(dogs.map((dog) => [dog.id, dog]));
+  return Object.keys(patch)
     .filter((key) => key !== "updatedAt")
-    .map((key) => `${key}: ${before?.[key] ?? "blank"} -> ${after?.[key] ?? "blank"}`);
-  return changed.length ? changed.join("; ") : "Medicine details updated";
+    .map((key) => ({
+      field: fieldLabel(key),
+      before: formatFieldValue(key, before?.[key], dogById),
+      after: formatFieldValue(key, after?.[key], dogById)
+    }));
+}
+
+function summarizeChanges(changes = []) {
+  if (!changes.length) return "Medicine details updated";
+  return changes.map((change) => `${change.field}: ${change.before} to ${change.after}`).join("; ");
+}
+
+function fieldLabel(key) {
+  const labels = {
+    name: "Name",
+    type: "Type",
+    subclass: "Class",
+    dosage: "Dosage",
+    quantity: "Quantity",
+    expiryDate: "Expiry date",
+    description: "Description",
+    status: "Hold status",
+    holdDogId: "Dog on hold"
+  };
+  return labels[key] || key;
+}
+
+function formatFieldValue(key, value, dogById = {}) {
+  if (value === undefined || value === null || value === "") return "None";
+  if (key === "holdDogId") {
+    const dog = dogById[value];
+    return dog ? `${dog.name} (${dog.kennel})` : value;
+  }
+  return value;
+}
+
+function getDisplayChanges(entry) {
+  if (Array.isArray(entry.changes) && entry.changes.length) return entry.changes;
+  return parseLegacyDetails(entry.details);
+}
+
+function parseLegacyDetails(details = "") {
+  if (!details) return [{ field: "Change", before: "Previous value", after: "Updated" }];
+  const quantity = details.match(/Quantity changed from (.+) to (.+)$/i);
+  if (quantity) return [{ field: "Quantity", before: quantity[1], after: quantity[2] }];
+  if (details.includes(";") || details.includes(" -> ")) {
+    return details.split(";").map((part) => {
+      const [fieldPart, valuesPart] = part.split(":");
+      const [before, after] = String(valuesPart || "").split("->");
+      return {
+        field: fieldLabel(String(fieldPart || "Change").trim()),
+        before: before?.trim() || "Previous value",
+        after: after?.trim() || "Updated"
+      };
+    });
+  }
+  return [{ field: "Summary", before: "Record", after: details }];
+}
+
+function formatHistoryAction(action = "") {
+  const labels = {
+    added: "Added",
+    updated: "Updated",
+    deleted: "Deleted",
+    "quantity updated": "Quantity Updated",
+    "hold updated": "Hold Updated"
+  };
+  return labels[action] || action || "Changed";
+}
+
+function historyActionClass(action = "") {
+  if (action === "added") return "add";
+  if (action === "deleted") return "delete";
+  if (action === "quantity updated") return "stock";
+  if (action === "hold updated") return "hold";
+  return "edit";
+}
+
+function formatChangeValue(value) {
+  if (value === undefined || value === null || value === "") return "None";
+  return String(value);
 }
 
 function formatDateTime(value) {
