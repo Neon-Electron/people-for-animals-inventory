@@ -102,6 +102,20 @@ button:disabled {
   margin-bottom: 16px;
 }
 
+.brandBlock {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.brandLogo {
+  background: #ffffff;
+  border: 1px solid #d9e0d8;
+  height: 64px;
+  object-fit: contain;
+  width: 64px;
+}
+
 .eyebrow {
   color: #597066;
   font-size: 0.78rem;
@@ -455,10 +469,10 @@ td small,
 
 .loginLogo {
   display: block;
-  height: 118px;
+  height: 136px;
   margin: 0 auto 12px;
   object-fit: contain;
-  width: 118px;
+  width: 136px;
 }
 
 .loginPanel h1 {
@@ -499,6 +513,11 @@ td small,
 
   .topbar {
     align-items: flex-start;
+  }
+
+  .brandLogo {
+    height: 52px;
+    width: 52px;
   }
 
   .gridForm,

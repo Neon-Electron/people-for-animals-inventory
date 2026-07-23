@@ -469,9 +469,12 @@ function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div>
-          <p className="eyebrow">People for Animals</p>
-          <h1>Medicine Inventory</h1>
+        <div className="brandBlock">
+          <img className="brandLogo" src="/pfa-logo.jpg" alt="People for Animals TIET" />
+          <div>
+            <p className="eyebrow">People for Animals</p>
+            <h1>Medicine Inventory</h1>
+          </div>
         </div>
         <button className="iconText ghost" onClick={logout}>
           <LogOut size={18} /> Logout
@@ -527,7 +530,7 @@ function LoginPage({ onLogin, onRegister }) {
   return (
     <main className="loginShell">
       <section className="loginPanel">
-        <img className="loginLogo" src="/logo.svg" alt="People for Animals" />
+        <img className="loginLogo" src="/pfa-logo.jpg" alt="People for Animals TIET" />
         <p className="eyebrow">People for Animals</p>
         <h1>{mode === "register" ? "Create Account" : "Inventory Login"}</h1>
         <div className="segmented">
