@@ -163,6 +163,52 @@ h2 {
   gap: 16px;
 }
 
+.metricGrid,
+.insightGrid {
+  display: grid;
+  gap: 12px;
+}
+
+.metricGrid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.insightGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metricCard {
+  background: #ffffff;
+  border: 1px solid #d9e0d8;
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+}
+
+.metricCard span {
+  color: #66756d;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.metricCard strong {
+  font-size: 1.75rem;
+}
+
+.metricCard.warn {
+  border-color: #d69c35;
+  background: #fff8ea;
+}
+
+.filterBar select,
+.filterBar button {
+  flex: 1 1 150px;
+}
+
+.hiddenInput {
+  display: none;
+}
+
 .toolbar {
   flex-wrap: wrap;
 }
@@ -247,6 +293,31 @@ td small,
 .pill.hold {
   background: #fff1cf;
   color: #734c00;
+}
+
+.statusBadge {
+  display: block;
+  font-size: 0.74rem;
+  font-weight: 900;
+  margin-top: 4px;
+  padding: 4px 6px;
+  width: max-content;
+}
+
+.statusBadge.ok {
+  background: #e9f5ee;
+  color: #155a38;
+}
+
+.statusBadge.warn,
+.statusBadge.notice {
+  background: #fff1cf;
+  color: #734c00;
+}
+
+.statusBadge.bad {
+  background: #fff0f0;
+  color: #8c1f1f;
 }
 
 .actions {
@@ -518,6 +589,17 @@ td small,
   margin: 0;
 }
 
+.miniRow {
+  border: 1px solid #e4e9e2;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+}
+
+.miniRow small {
+  color: #66756d;
+}
+
 .inlineForm input {
   flex: 1;
 }
@@ -591,7 +673,9 @@ td small,
   }
 
   .gridForm,
-  .split {
+  .split,
+  .metricGrid,
+  .insightGrid {
     grid-template-columns: 1fr;
   }
 

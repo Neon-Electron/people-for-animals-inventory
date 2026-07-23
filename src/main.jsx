@@ -7,14 +7,17 @@ import {
   Dog,
   Download,
   Edit3,
+  FileDown,
   History,
   LogOut,
   PackagePlus,
   Plus,
+  Printer,
   Search,
   Shield,
   SlidersHorizontal,
   Trash2,
+  Upload,
   Users,
   X
 } from "lucide-react";
@@ -101,7 +104,9 @@ function useInventoryStore(session) {
       history: [],
       users: seedUsers,
       types: defaultTypes,
-      subclasses: defaultSubclasses
+      subclasses: defaultSubclasses,
+      locations: ["Clinic", "Store Room", "Recovery Ward"],
+      lowStockThreshold: 10
     };
   });
 
@@ -124,7 +129,10 @@ function useInventoryStore(session) {
         if (users.length) setState((current) => ({ ...current, users }));
       }),
       onSnapshot(collection(db, "settings"), (snapshot) => {
-        const settings = Object.fromEntries(snapshot.docs.map((item) => [item.id, item.data().values || []]));
+        const settings = Object.fromEntries(snapshot.docs.map((item) => {
+          const data = item.data();
+          return [item.id, data.values ?? data.value ?? []];
+        }));
         setState((current) => ({ ...current, ...settings }));
       })
     ];
@@ -158,6 +166,7 @@ function useInventoryStore(session) {
           quantity: Number(payload.quantity || 0),
           status: "Available",
           holdDogId: "",
+          location: payload.location || "",
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
@@ -196,7 +205,7 @@ function useInventoryStore(session) {
         });
         return medicine;
       },
-      async updateMedicine(serialNumber, patch, actor) {
+      async updateMedicine(serialNumber, patch, actor, reason = "") {
         const before = state.medicines.find((medicine) => medicine.serialNumber === serialNumber);
         if (db) {
           const medicineRef = doc(db, "medicines", serialNumber);
@@ -216,6 +225,7 @@ function useInventoryStore(session) {
             medicineName: after.name || currentMedicine?.name || serialNumber,
             actorEmail: actor?.email || "unknown",
             actorName: actor?.name || actor?.email || "Unknown",
+            reason: reason || "Not specified",
             details: summarizeChanges(changes),
             changes
           });
@@ -237,6 +247,7 @@ function useInventoryStore(session) {
           medicineName: after.name || serialNumber,
           actorEmail: actor?.email || "unknown",
           actorName: actor?.name || actor?.email || "Unknown",
+          reason: reason || "Not specified",
           details: summarizeChanges(changes),
           changes
         });
@@ -289,6 +300,13 @@ function useInventoryStore(session) {
           return;
         }
         setState((current) => ({ ...current, [list]: current[list].filter((item) => item !== value) }));
+      },
+      updateSetting(key, value) {
+        if (db) {
+          setDoc(doc(db, "settings", key), { value });
+          return;
+        }
+        setState((current) => ({ ...current, [key]: value }));
       },
       async addDog(dog) {
         const nextDog = { ...dog, id: id("dog") };
@@ -502,7 +520,7 @@ function App() {
         <Tab active={page === "scan"} onClick={() => setPage("scan")} icon={<Camera size={18} />} label="Scan" />
         <Tab active={page === "dogs"} onClick={() => setPage("dogs")} icon={<Dog size={18} />} label="Dogs" />
         {isAdmin && <Tab active={page === "data"} onClick={() => setPage("data")} icon={<SlidersHorizontal size={18} />} label="Data" />}
-        {isAdmin && <Tab active={page === "history"} onClick={() => setPage("history")} icon={<History size={18} />} label="History" />}
+        {isAdmin && <Tab active={page === "history"} onClick={() => setPage("history")} icon={<History size={18} />} label="Activity" />}
         {isAdmin && <Tab active={page === "admin"} onClick={() => setPage("admin")} icon={<Users size={18} />} label="Admin" />}
       </nav>
 
@@ -590,13 +608,31 @@ function Tab({ active, onClick, icon, label }) {
 function Dashboard({ store, actions, isAdmin, session }) {
   const [query, setQuery] = useState("");
   const [type, setType] = useState("All");
+  const [expiryFilter, setExpiryFilter] = useState("All");
+  const [stockFilter, setStockFilter] = useState("All");
+  const [locationFilter, setLocationFilter] = useState("All");
+  const [availabilityFilter, setAvailabilityFilter] = useState("All");
   const [dialog, setDialog] = useState(null);
+  const importRef = useRef(null);
   const dogById = Object.fromEntries(store.dogs.map((dog) => [dog.id, dog]));
+  const lowStockThreshold = Number(store.lowStockThreshold || 10);
 
-  const rows = store.medicines.filter((medicine) => {
+  const rows = useMemo(() => store.medicines.filter((medicine) => {
     const haystack = `${medicine.name} ${medicine.type} ${medicine.subclass} ${medicine.dosage}`.toLowerCase();
-    return haystack.includes(query.toLowerCase()) && (type === "All" || medicine.type === type);
-  });
+    const expiryBucket = getExpiryBucket(medicine.expiryDate);
+    const stockStatus = getStockStatus(medicine.quantity, lowStockThreshold);
+    return (
+      haystack.includes(query.toLowerCase()) &&
+      (type === "All" || medicine.subclass === type || medicine.type === type) &&
+      (expiryFilter === "All" || expiryBucket === expiryFilter) &&
+      (stockFilter === "All" || stockStatus === stockFilter) &&
+      (locationFilter === "All" || (medicine.location || "Unassigned") === locationFilter) &&
+      (availabilityFilter === "All" || medicine.status === availabilityFilter)
+    );
+  }), [store.medicines, query, type, expiryFilter, stockFilter, locationFilter, availabilityFilter, lowStockThreshold]);
+
+  const metrics = useMemo(() => getInventoryMetrics(store.medicines, store.history || [], lowStockThreshold), [store.medicines, store.history, lowStockThreshold]);
+  const locations = Array.from(new Set([...(store.locations || []), ...store.medicines.map((medicine) => medicine.location || "Unassigned")]));
 
   return (
     <section className="pageStack">
@@ -618,6 +654,76 @@ function Dashboard({ store, actions, isAdmin, session }) {
         )}
       </div>
 
+      <div className="metricGrid">
+        <MetricCard label="Total medicines" value={metrics.total} />
+        <MetricCard label="Low stock" value={metrics.lowStock} tone={metrics.lowStock ? "warn" : ""} />
+        <MetricCard label="Expiring in 90 days" value={metrics.expiring90} tone={metrics.expiring90 ? "warn" : ""} />
+        <MetricCard label="On hold" value={metrics.onHold} />
+      </div>
+
+      <div className="insightGrid">
+        <div className="listPanel">
+          <h2>Recent Activity</h2>
+          {!metrics.recent.length && <p className="helperText">No recent activity yet.</p>}
+          {metrics.recent.map((entry) => (
+            <div className="miniRow" key={entry.id}>
+              <strong>{entry.medicineName}</strong>
+              <small>{formatHistoryAction(entry.action)} by {entry.actorName || entry.actorEmail}</small>
+            </div>
+          ))}
+        </div>
+        <div className="listPanel">
+          <h2>Frequently Used</h2>
+          {!metrics.frequent.length && <p className="helperText">Usage appears here after quantity updates.</p>}
+          {metrics.frequent.map(([name, count]) => (
+            <div className="miniRow" key={name}>
+              <strong>{name}</strong>
+              <small>{count} stock updates</small>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="toolbar filterBar">
+        <select value={expiryFilter} onChange={(event) => setExpiryFilter(event.target.value)} aria-label="Filter by expiry">
+          <option>All</option>
+          <option>Expired</option>
+          <option>30 days</option>
+          <option>60 days</option>
+          <option>90 days</option>
+          <option>Later</option>
+        </select>
+        <select value={stockFilter} onChange={(event) => setStockFilter(event.target.value)} aria-label="Filter by stock">
+          <option>All</option>
+          <option>In Stock</option>
+          <option>Low Stock</option>
+          <option>Out of Stock</option>
+        </select>
+        <select value={locationFilter} onChange={(event) => setLocationFilter(event.target.value)} aria-label="Filter by location">
+          <option>All</option>
+          {locations.map((location) => <option key={location}>{location}</option>)}
+        </select>
+        <select value={availabilityFilter} onChange={(event) => setAvailabilityFilter(event.target.value)} aria-label="Filter by availability">
+          <option>All</option>
+          <option>Available</option>
+          <option>On Hold</option>
+        </select>
+        <button onClick={() => exportCsv(rows)}>
+          <FileDown size={18} /> CSV
+        </button>
+        {isAdmin && (
+          <>
+            <input ref={importRef} type="file" accept=".csv" className="hiddenInput" onChange={(event) => importCsv(event, actions, session)} />
+            <button onClick={() => importRef.current?.click()}>
+              <Upload size={18} /> Import
+            </button>
+          </>
+        )}
+        <button onClick={() => printQrSheet(rows)}>
+          <Printer size={18} /> QR Sheet
+        </button>
+      </div>
+
       <div className="tableWrap">
         <table>
           <thead>
@@ -625,6 +731,7 @@ function Dashboard({ store, actions, isAdmin, session }) {
               <th>Name</th>
               <th>Quantity</th>
               <th>Expiry</th>
+              <th>Location</th>
               <th>Status</th>
               <th>Actions</th>
             </tr>
@@ -636,8 +743,19 @@ function Dashboard({ store, actions, isAdmin, session }) {
                   <strong>{medicine.name}</strong>
                   <small>{medicine.type} · {medicine.subclass} · {medicine.dosage}</small>
                 </td>
-                <td>{medicine.quantity}</td>
-                <td>{medicine.expiryDate}</td>
+                <td>
+                  <strong>{medicine.quantity}</strong>
+                  <span className={`statusBadge ${stockBadgeClass(getStockStatus(medicine.quantity, lowStockThreshold))}`}>
+                    {getStockStatus(medicine.quantity, lowStockThreshold)}
+                  </span>
+                </td>
+                <td>
+                  <strong>{medicine.expiryDate}</strong>
+                  <span className={`statusBadge ${expiryBadgeClass(getExpiryBucket(medicine.expiryDate))}`}>
+                    {getExpiryBucket(medicine.expiryDate)}
+                  </span>
+                </td>
+                <td>{medicine.location || "Unassigned"}</td>
                 <td>
                   <span className={medicine.status === "On Hold" ? "pill hold" : "pill"}>
                     {medicine.status}
@@ -669,7 +787,7 @@ function Dashboard({ store, actions, isAdmin, session }) {
             ))}
             {!rows.length && (
               <tr>
-                <td colSpan="5" className="empty">No medicines found.</td>
+                <td colSpan="6" className="empty">No medicines match the current filters.</td>
               </tr>
             )}
           </tbody>
@@ -704,8 +822,8 @@ function Dashboard({ store, actions, isAdmin, session }) {
         <StockDialog
           medicine={dialog.medicine}
           onClose={() => setDialog(null)}
-          onSave={async (quantity) => {
-            await actions.updateMedicine(dialog.medicine.serialNumber, { quantity }, session);
+          onSave={async (quantity, reason) => {
+            await actions.updateMedicine(dialog.medicine.serialNumber, { quantity }, session, reason);
             setDialog(null);
           }}
         />
@@ -715,8 +833,8 @@ function Dashboard({ store, actions, isAdmin, session }) {
           medicine={dialog.medicine}
           dogs={store.dogs}
           onClose={() => setDialog(null)}
-          onSave={async (patch) => {
-            await actions.updateMedicine(dialog.medicine.serialNumber, patch, session);
+          onSave={async (patch, reason) => {
+            await actions.updateMedicine(dialog.medicine.serialNumber, patch, session, reason);
             setDialog(null);
           }}
         />
@@ -746,6 +864,7 @@ function MedicineDialog({ title, medicine, types, subclasses, dogs, onClose, onS
       quantity: 0,
       expiryDate: "",
       description: "",
+      location: "",
       status: "Available",
       holdDogId: ""
     }
@@ -800,6 +919,7 @@ function MedicineDialog({ title, medicine, types, subclasses, dogs, onClose, onS
         <label>Dosage<input required placeholder="5mg" value={form.dosage} onChange={(event) => update("dosage", event.target.value)} /></label>
         <label>Quantity<input required type="number" min="0" value={form.quantity} onChange={(event) => update("quantity", event.target.value)} /></label>
         <label>Expiry Date<input required type="date" value={form.expiryDate} onChange={(event) => update("expiryDate", event.target.value)} /></label>
+        <label>Location<input value={form.location || ""} placeholder="Clinic, storeroom, ward" onChange={(event) => update("location", event.target.value)} /></label>
         <label className="wide">Description<textarea value={form.description} onChange={(event) => update("description", event.target.value)} /></label>
         <label>Status<select value={form.status} onChange={(event) => update("status", event.target.value)}><option>Available</option><option>On Hold</option></select></label>
         {form.status === "On Hold" && (
@@ -816,6 +936,7 @@ function MedicineDialog({ title, medicine, types, subclasses, dogs, onClose, onS
 
 function StockDialog({ medicine, onClose, onSave }) {
   const [quantity, setQuantity] = useState(medicine.quantity);
+  const [reason, setReason] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -823,7 +944,7 @@ function StockDialog({ medicine, onClose, onSave }) {
     setIsSaving(true);
     setError("");
     try {
-      await onSave(quantity);
+      await onSave(quantity, reason);
     } catch (saveError) {
       setError(saveError?.message || "Could not update this quantity.");
     } finally {
@@ -841,6 +962,10 @@ function StockDialog({ medicine, onClose, onSave }) {
         Quantity
         <input type="number" min="0" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
       </label>
+      <label className="form">
+        Reason
+        <input value={reason} placeholder="Restocked, used for treatment, correction" onChange={(event) => setReason(event.target.value)} />
+      </label>
       {error && <p className="error">{error}</p>}
       <button className="primary full" onClick={submit} disabled={isSaving}>
         <Check size={18} /> {isSaving ? "Updating..." : "Update Quantity"}
@@ -852,6 +977,7 @@ function StockDialog({ medicine, onClose, onSave }) {
 function HoldDialog({ medicine, dogs, onClose, onSave }) {
   const [status, setStatus] = useState(medicine.status || "Available");
   const [holdDogId, setHoldDogId] = useState(medicine.holdDogId || "");
+  const [reason, setReason] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -862,7 +988,7 @@ function HoldDialog({ medicine, dogs, onClose, onSave }) {
       await onSave({
         status,
         holdDogId: status === "On Hold" ? holdDogId : ""
-      });
+      }, reason);
     } catch (saveError) {
       setError(saveError?.message || "Could not update hold status.");
     } finally {
@@ -895,6 +1021,10 @@ function HoldDialog({ medicine, dogs, onClose, onSave }) {
             </select>
           </label>
         )}
+        <label>
+          Reason
+          <input value={reason} placeholder="Reserved for treatment, returned to stock" onChange={(event) => setReason(event.target.value)} />
+        </label>
         {error && <p className="error">{error}</p>}
         <button className="primary full" onClick={submit} disabled={isSaving || (status === "On Hold" && !holdDogId)}>
           <Check size={18} /> {isSaving ? "Saving..." : "Save Hold"}
@@ -937,8 +1067,8 @@ function ScanPage({ medicines, onUpdate, session }) {
         <StockDialog
           medicine={medicine}
           onClose={() => setMedicine(null)}
-          onSave={async (quantity) => {
-            await onUpdate(medicine.serialNumber, { quantity }, session);
+          onSave={async (quantity, reason) => {
+            await onUpdate(medicine.serialNumber, { quantity }, session, reason);
             setMedicine(null);
           }}
         />
@@ -1055,9 +1185,22 @@ function DogsPage({ dogs, actions, isAdmin }) {
 
 function DataPage({ store, actions }) {
   return (
-    <section className="split">
-      <EditableList title="Medicine Types" list="types" values={store.types} actions={actions} />
-      <EditableList title="Medicine Classes" list="subclasses" values={store.subclasses} actions={actions} />
+    <section className="pageStack">
+      <div className="split">
+        <EditableList title="Medicine Types" list="types" values={store.types} actions={actions} />
+        <EditableList title="Medicine Classes" list="subclasses" values={store.subclasses} actions={actions} />
+      </div>
+      <div className="split">
+        <EditableList title="Locations" list="locations" values={store.locations || []} actions={actions} />
+        <div className="listPanel">
+          <h2>Stock Threshold</h2>
+          <p className="helperText">Medicines at or below this quantity are marked Low Stock.</p>
+          <label className="form">
+            Low-stock threshold
+            <input type="number" min="1" value={store.lowStockThreshold || 10} onChange={(event) => actions.updateSetting("lowStockThreshold", Number(event.target.value || 1))} />
+          </label>
+        </div>
+      </div>
     </section>
   );
 }
@@ -1110,12 +1253,30 @@ function AdminPage({ users, actions }) {
 }
 
 function HistoryPage({ history }) {
+  const [query, setQuery] = useState("");
+  const [actionFilter, setActionFilter] = useState("All");
+  const filtered = history.filter((entry) => {
+    const text = `${entry.action} ${entry.medicineName} ${entry.actorName} ${entry.actorEmail} ${entry.details}`.toLowerCase();
+    return text.includes(query.toLowerCase()) && (actionFilter === "All" || entry.action === actionFilter);
+  });
+  const actions = Array.from(new Set(history.map((entry) => entry.action).filter(Boolean)));
+
   return (
     <section className="pageStack">
       <div className="listPanel">
-        <h2>Medicine History</h2>
-        {!history.length && <p className="helperText">No medicine changes have been recorded yet.</p>}
-        {history.map((entry) => (
+        <h2>Activity Log</h2>
+        <div className="toolbar">
+          <div className="searchBox">
+            <Search size={18} />
+            <input placeholder="Search activity" value={query} onChange={(event) => setQuery(event.target.value)} />
+          </div>
+          <select value={actionFilter} onChange={(event) => setActionFilter(event.target.value)}>
+            <option>All</option>
+            {actions.map((action) => <option key={action} value={action}>{formatHistoryAction(action)}</option>)}
+          </select>
+        </div>
+        {!filtered.length && <p className="helperText">No activity matches the current filters.</p>}
+        {filtered.map((entry) => (
           <div className="historyRow" key={entry.id}>
             <div className="historyMain">
               <div className="historyTitleLine">
@@ -1125,6 +1286,7 @@ function HistoryPage({ history }) {
               <small>
                 By {entry.actorName || entry.actorEmail || "Unknown user"} on {formatDateTime(entry.createdAt)}
               </small>
+              {entry.reason && <small>Reason: {entry.reason}</small>}
               <div className="changeList">
                 {getDisplayChanges(entry).map((change, index) => (
                   <div className="changeItem" key={`${entry.id}-${change.field}-${index}`}>
@@ -1206,6 +1368,175 @@ function downloadQrSvg(medicine) {
   anchor.download = `${safeName || "medicine"}-qr.svg`;
   anchor.click();
   URL.revokeObjectURL(anchor.href);
+}
+
+function MetricCard({ label, value, tone = "" }) {
+  return (
+    <div className={`metricCard ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function getInventoryMetrics(medicines, history, threshold) {
+  return {
+    total: medicines.length,
+    lowStock: medicines.filter((medicine) => getStockStatus(medicine.quantity, threshold) === "Low Stock").length,
+    expiring90: medicines.filter((medicine) => ["30 days", "60 days", "90 days"].includes(getExpiryBucket(medicine.expiryDate))).length,
+    onHold: medicines.filter((medicine) => medicine.status === "On Hold").length,
+    recent: history.slice(0, 5),
+    frequent: getFrequentMedicines(history)
+  };
+}
+
+function getFrequentMedicines(history) {
+  const counts = {};
+  history.forEach((entry) => {
+    if (entry.action === "quantity updated" && entry.medicineName) {
+      counts[entry.medicineName] = (counts[entry.medicineName] || 0) + 1;
+    }
+  });
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+}
+
+function getStockStatus(quantity, threshold = 10) {
+  const value = Number(quantity || 0);
+  if (value <= 0) return "Out of Stock";
+  if (value <= Number(threshold || 10)) return "Low Stock";
+  return "In Stock";
+}
+
+function getExpiryBucket(expiryDate) {
+  if (!expiryDate) return "Later";
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const expiry = new Date(expiryDate);
+  const days = Math.ceil((expiry - today) / 86400000);
+  if (days < 0) return "Expired";
+  if (days <= 30) return "30 days";
+  if (days <= 60) return "60 days";
+  if (days <= 90) return "90 days";
+  return "Later";
+}
+
+function stockBadgeClass(status) {
+  return {
+    "In Stock": "ok",
+    "Low Stock": "warn",
+    "Out of Stock": "bad"
+  }[status] || "";
+}
+
+function expiryBadgeClass(bucket) {
+  return {
+    Expired: "bad",
+    "30 days": "bad",
+    "60 days": "warn",
+    "90 days": "notice",
+    Later: "ok"
+  }[bucket] || "";
+}
+
+function exportCsv(rows) {
+  const headers = ["name", "type", "subclass", "dosage", "quantity", "expiryDate", "location", "status", "serialNumber"];
+  const csv = [
+    headers.join(","),
+    ...rows.map((row) => headers.map((key) => csvEscape(row[key] ?? "")).join(","))
+  ].join("\n");
+  downloadText("medicine-inventory.csv", csv, "text/csv");
+}
+
+async function importCsv(event, actions, session) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  const text = await file.text();
+  const [headerLine, ...lines] = text.split(/\r?\n/).filter(Boolean);
+  const headers = parseCsvLine(headerLine);
+  const required = ["name", "type", "subclass", "dosage", "quantity", "expiryDate"];
+  const missing = required.filter((key) => !headers.includes(key));
+  if (missing.length) {
+    alert(`CSV is missing required columns: ${missing.join(", ")}`);
+    return;
+  }
+  for (const line of lines) {
+    const values = parseCsvLine(line);
+    const record = Object.fromEntries(headers.map((header, index) => [header, values[index] || ""]));
+    if (!record.name || Number.isNaN(Number(record.quantity))) continue;
+    await actions.addMedicine({
+      name: record.name,
+      type: record.type,
+      subclass: record.subclass,
+      dosage: record.dosage,
+      quantity: Number(record.quantity),
+      expiryDate: record.expiryDate,
+      location: record.location || "",
+      description: record.description || ""
+    }, session);
+  }
+}
+
+function printQrSheet(rows) {
+  const labels = rows.map((medicine) => `
+    <section class="label">
+      <img src="${qrUrl(medicine.serialNumber, 180)}" alt="QR for ${escapeHtml(medicine.name)}" />
+      <strong>${escapeHtml(medicine.name)}</strong>
+      <span>${escapeHtml(medicine.dosage || "")}</span>
+      <small>${escapeHtml(medicine.serialNumber)}</small>
+    </section>
+  `).join("");
+  const popup = window.open("", "_blank");
+  if (!popup) return;
+  popup.document.write(`<!doctype html><html><head><title>QR Labels</title><style>
+    body{font-family:Arial,sans-serif;margin:20px}
+    .sheet{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+    .label{border:1px solid #222;padding:10px;text-align:center;break-inside:avoid}
+    img{width:120px;height:120px}
+    strong,span,small{display:block;margin-top:4px}
+    @media print{button{display:none}.sheet{gap:8px}}
+  </style></head><body><button onclick="window.print()">Print</button><main class="sheet">${labels}</main></body></html>`);
+  popup.document.close();
+}
+
+function csvEscape(value) {
+  const text = String(value);
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function parseCsvLine(line) {
+  const values = [];
+  let current = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '"' && line[index + 1] === '"') {
+      current += '"';
+      index += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === "," && !quoted) {
+      values.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  values.push(current);
+  return values.map((value) => value.trim());
+}
+
+function downloadText(filename, text, type) {
+  const blob = new Blob([text], { type });
+  const anchor = document.createElement("a");
+  anchor.href = URL.createObjectURL(blob);
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(anchor.href);
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[<>&'"]/g, (char) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&#39;", '"': "&quot;" })[char]);
 }
 
 function getHistoryAction(patch = {}) {
