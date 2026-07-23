@@ -91,7 +91,7 @@ const firebaseApp = hasFirebaseConfig ? initializeApp(firebaseConfig) : null;
 const db = firebaseApp ? getFirestore(firebaseApp) : null;
 const auth = firebaseApp ? getAuth(firebaseApp) : null;
 
-function useInventoryStore() {
+function useInventoryStore(session) {
   const [state, setState] = useState(() => {
     const stored = localStorage.getItem("pfa-inventory");
     if (stored) return JSON.parse(stored);
@@ -110,30 +110,34 @@ function useInventoryStore() {
   }, [state]);
 
   useEffect(() => {
-    if (!db) return undefined;
+    if (!db || !session) return undefined;
     const unsubscribers = [
       onSnapshot(collection(db, "medicines"), (snapshot) => {
         setState((current) => ({ ...current, medicines: snapshot.docs.map((item) => item.data()) }));
       }),
       onSnapshot(collection(db, "dogs"), (snapshot) => {
         const dogs = snapshot.docs.map((item) => item.data());
-        if (dogs.length) setState((current) => ({ ...current, dogs }));
+        setState((current) => ({ ...current, dogs }));
       }),
       onSnapshot(collection(db, "users"), (snapshot) => {
         const users = snapshot.docs.map((item) => item.data());
         if (users.length) setState((current) => ({ ...current, users }));
-      }),
-      onSnapshot(collection(db, "history"), (snapshot) => {
-        const history = snapshot.docs.map((item) => item.data()).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
-        setState((current) => ({ ...current, history }));
       }),
       onSnapshot(collection(db, "settings"), (snapshot) => {
         const settings = Object.fromEntries(snapshot.docs.map((item) => [item.id, item.data().values || []]));
         setState((current) => ({ ...current, ...settings }));
       })
     ];
+    if (session.role === "admin") {
+      unsubscribers.push(
+        onSnapshot(collection(db, "history"), (snapshot) => {
+          const history = snapshot.docs.map((item) => item.data()).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+          setState((current) => ({ ...current, history }));
+        })
+      );
+    }
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
-  }, []);
+  }, [session]);
 
   const api = useMemo(
     () => ({
@@ -270,10 +274,10 @@ function useInventoryStore() {
         }
         setState((current) => ({ ...current, [list]: current[list].filter((item) => item !== value) }));
       },
-      addDog(dog) {
+      async addDog(dog) {
         const nextDog = { ...dog, id: id("dog") };
         if (db) {
-          setDoc(doc(db, "dogs", nextDog.id), nextDog);
+          await setDoc(doc(db, "dogs", nextDog.id), nextDog);
           return;
         }
         setState((current) => ({ ...current, dogs: [...current.dogs, nextDog] }));
@@ -350,7 +354,7 @@ function useInventoryStore() {
 
 function App() {
   const [session, setSession] = useState(() => JSON.parse(sessionStorage.getItem("pfa-session") || "null"));
-  const [store, actions] = useInventoryStore();
+  const [store, actions] = useInventoryStore(session);
   const [page, setPage] = useState("dashboard");
 
   const isAdmin = session?.role === "admin";
@@ -630,6 +634,9 @@ function Dashboard({ store, actions, isAdmin, session }) {
                   <button title="Update stock" onClick={() => setDialog({ mode: "stock", medicine })}>
                     <Plus size={16} />
                   </button>
+                  <button title="Put on hold" onClick={() => setDialog({ mode: "hold", medicine })}>
+                    <Dog size={16} />
+                  </button>
                   <button title="Download barcode" onClick={() => downloadQrSvg(medicine)}>
                     <Download size={16} />
                   </button>
@@ -680,6 +687,17 @@ function Dashboard({ store, actions, isAdmin, session }) {
           onClose={() => setDialog(null)}
           onSave={async (quantity) => {
             await actions.updateMedicine(dialog.medicine.serialNumber, { quantity }, session);
+            setDialog(null);
+          }}
+        />
+      )}
+      {dialog?.mode === "hold" && (
+        <HoldDialog
+          medicine={dialog.medicine}
+          dogs={store.dogs}
+          onClose={() => setDialog(null)}
+          onSave={async (patch) => {
+            await actions.updateMedicine(dialog.medicine.serialNumber, patch, session);
             setDialog(null);
           }}
         />
@@ -812,6 +830,61 @@ function StockDialog({ medicine, onClose, onSave }) {
   );
 }
 
+function HoldDialog({ medicine, dogs, onClose, onSave }) {
+  const [status, setStatus] = useState(medicine.status || "Available");
+  const [holdDogId, setHoldDogId] = useState(medicine.holdDogId || "");
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    setIsSaving(true);
+    setError("");
+    try {
+      await onSave({
+        status,
+        holdDogId: status === "On Hold" ? holdDogId : ""
+      });
+    } catch (saveError) {
+      setError(saveError?.message || "Could not update hold status.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <Dialog onClose={onClose} title="Medicine Hold">
+      <div className="stockHeader">
+        <strong>{medicine.name}</strong>
+        <span>{medicine.serialNumber}</span>
+      </div>
+      <div className="form">
+        <label>
+          Status
+          <select value={status} onChange={(event) => setStatus(event.target.value)}>
+            <option>Available</option>
+            <option>On Hold</option>
+          </select>
+        </label>
+        {status === "On Hold" && (
+          <label>
+            Dog
+            <select required value={holdDogId} onChange={(event) => setHoldDogId(event.target.value)}>
+              <option value="">Select dog</option>
+              {dogs.map((dog) => (
+                <option key={dog.id} value={dog.id}>{dog.name} | {dog.kennel}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        {error && <p className="error">{error}</p>}
+        <button className="primary full" onClick={submit} disabled={isSaving || (status === "On Hold" && !holdDogId)}>
+          <Check size={18} /> {isSaving ? "Saving..." : "Save Hold"}
+        </button>
+      </div>
+    </Dialog>
+  );
+}
+
 function QrCard({ medicine }) {
   return (
     <div className="qrCard">
@@ -935,32 +1008,28 @@ function DogsPage({ dogs, actions, isAdmin }) {
             ) : (
               <span><strong>{dog.name}</strong><small>{dog.kennel}</small></span>
             )}
-            {isAdmin && (
-              <div className="rowActions">
-                {editingDogId === dog.id ? (
-                  <>
-                    <button title="Save dog" onClick={() => saveDog(dog.id)}><Check size={16} /></button>
-                    <button title="Cancel edit" onClick={() => setEditingDogId("")}><X size={16} /></button>
-                  </>
-                ) : (
-                  <>
-                    <button title="Edit dog" onClick={() => startEdit(dog)}><Edit3 size={16} /></button>
-                    <button title="Remove dog" onClick={() => actions.removeDog(dog.id)}><Trash2 size={16} /></button>
-                  </>
-                )}
-              </div>
-            )}
+            <div className="rowActions">
+              {editingDogId === dog.id ? (
+                <>
+                  <button title="Save dog" onClick={() => saveDog(dog.id)}><Check size={16} /></button>
+                  <button title="Cancel edit" onClick={() => setEditingDogId("")}><X size={16} /></button>
+                </>
+              ) : (
+                <>
+                  <button title="Edit dog" onClick={() => startEdit(dog)}><Edit3 size={16} /></button>
+                  {isAdmin && <button title="Remove dog" onClick={() => actions.removeDog(dog.id)}><Trash2 size={16} /></button>}
+                </>
+              )}
+            </div>
           </div>
         ))}
       </div>
-      {isAdmin && (
-        <form className="form sideForm" onSubmit={(event) => { event.preventDefault(); actions.addDog({ name, kennel }); setName(""); setKennel(""); }}>
-          <h2>Add Dog</h2>
-          <label>Name<input required value={name} onChange={(event) => setName(event.target.value)} /></label>
-          <label>Kennel<input required value={kennel} onChange={(event) => setKennel(event.target.value)} /></label>
-          <button className="primary"><Plus size={18} /> Add Dog</button>
-        </form>
-      )}
+      <form className="form sideForm" onSubmit={async (event) => { event.preventDefault(); await actions.addDog({ name, kennel }); setName(""); setKennel(""); }}>
+        <h2>Add Dog</h2>
+        <label>Name<input required value={name} onChange={(event) => setName(event.target.value)} /></label>
+        <label>Kennel<input required value={kennel} onChange={(event) => setKennel(event.target.value)} /></label>
+        <button className="primary"><Plus size={18} /> Add Dog</button>
+      </form>
     </section>
   );
 }
