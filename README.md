@@ -12,7 +12,7 @@ npm run dev
 Default local admin for local-storage fallback:
 
 ```text
-User ID: aroragagan09@gmail.com
+User ID: set-with-VITE_ADMIN_USER_ID
 Password: admin123
 ```
 
@@ -23,7 +23,7 @@ For Firebase deployments, enable Email/Password sign-in in Firebase Authenticati
 Add these in Vercel project settings under **Settings > Environment Variables**:
 
 ```env
-VITE_ADMIN_USER_ID=aroragagan09@gmail.com
+VITE_ADMIN_USER_ID=your-admin-email@example.com
 VITE_ADMIN_PASSWORD=your-strong-password
 VITE_FIREBASE_API_KEY=...
 VITE_FIREBASE_AUTH_DOMAIN=...
