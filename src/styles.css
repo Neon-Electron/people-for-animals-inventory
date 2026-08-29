@@ -712,3 +712,21 @@ td small,
     text-align: left;
   }
 }
+
+.medPickerList {
+  border: 1px solid #e4e9e2;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.medPicker {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, 0.85fr);
+}
+
+td .pill + .pill {
+  margin-left: 6px;
+  margin-top: 4px;
+}

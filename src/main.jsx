@@ -4,6 +4,7 @@ import {
   Barcode,
   Camera,
   Check,
+  ClipboardList,
   Dog,
   Download,
   Edit3,
@@ -101,6 +102,7 @@ function useInventoryStore(session) {
     return {
       medicines: [],
       dogs: seedDogs,
+      treatments: [],
       history: [],
       users: seedUsers,
       types: defaultTypes,
@@ -123,6 +125,10 @@ function useInventoryStore(session) {
       onSnapshot(collection(db, "dogs"), (snapshot) => {
         const dogs = snapshot.docs.map((item) => item.data());
         setState((current) => ({ ...current, dogs }));
+      }),
+      onSnapshot(collection(db, "treatments"), (snapshot) => {
+        const treatments = snapshot.docs.map((item) => item.data()).sort((a, b) => String(a.revisitWhen || "9999-12-31").localeCompare(String(b.revisitWhen || "9999-12-31")));
+        setState((current) => ({ ...current, treatments }));
       }),
       onSnapshot(collection(db, "users"), (snapshot) => {
         const users = snapshot.docs.map((item) => item.data());
@@ -341,6 +347,58 @@ function useInventoryStore(session) {
           )
         }));
       },
+
+      async saveTreatment(payload, actor) {
+        const treatmentId = payload.id || id("treatment");
+        const linkedMedicines = (payload.meds || []).filter((med) => med.inventoryId);
+        const treatment = {
+          ...payload,
+          id: treatmentId,
+          meds: payload.meds || [],
+          createdAt: payload.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        if (db) {
+          await setDoc(doc(db, "treatments", treatmentId), treatment, { merge: true });
+          await Promise.all(linkedMedicines.map((med) => updateDoc(doc(db, "medicines", med.inventoryId), {
+            status: "On Hold",
+            holdDogId: treatment.dogId || "",
+            updatedAt: new Date().toISOString()
+          })));
+        } else {
+          setState((current) => ({
+            ...current,
+            treatments: current.treatments?.some((item) => item.id === treatmentId)
+              ? current.treatments.map((item) => (item.id === treatmentId ? treatment : item))
+              : [treatment, ...(current.treatments || [])],
+            medicines: current.medicines.map((medicine) =>
+              linkedMedicines.some((med) => med.inventoryId === medicine.serialNumber)
+                ? { ...medicine, status: "On Hold", holdDogId: treatment.dogId || "", updatedAt: new Date().toISOString() }
+                : medicine
+            )
+          }));
+        }
+        await api.addHistory({
+          action: payload.id ? "treatment updated" : "treatment added",
+          medicineId: linkedMedicines.map((med) => med.inventoryId).join(", ") || "custom",
+          medicineName: linkedMedicines.map((med) => med.name).join(", ") || "Custom treatment meds",
+          actorEmail: actor?.email || "unknown",
+          actorName: actor?.name || actor?.email || "Unknown",
+          details: `${payload.id ? "Updated" : "Added"} treatment for ${treatment.dogName || "dog"}`,
+          changes: [{ field: "Treatment", before: payload.id ? "Previous plan" : "New treatment", after: treatment.name }]
+        });
+        return treatment;
+      },
+      async deleteTreatment(treatmentId) {
+        if (db) {
+          await deleteDoc(doc(db, "treatments", treatmentId));
+          return;
+        }
+        setState((current) => ({
+          ...current,
+          treatments: (current.treatments || []).filter((treatment) => treatment.id !== treatmentId)
+        }));
+      },
       async updateUser(userId, patch) {
         const protectedEmail = env("VITE_ADMIN_USER_ID", "aroragagan09@gmail.com").toLowerCase();
         const target = state.users.find((user) => user.id === userId);
@@ -464,10 +522,6 @@ function App() {
   async function register(email, password, name) {
     const cleanEmail = email.trim().toLowerCase();
     if (auth && db) {
-      const duplicate = await getDocs(query(collection(db, "users"), where("email", "==", cleanEmail)));
-      if (!duplicate.empty) {
-        throw new Error("An account with this email already exists. Use Login instead.");
-      }
       const credential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
       await resolveUserSession(credential.user, name);
       return true;
@@ -519,6 +573,7 @@ function App() {
         <Tab active={page === "dashboard"} onClick={() => setPage("dashboard")} icon={<Barcode size={18} />} label="Dashboard" />
         <Tab active={page === "scan"} onClick={() => setPage("scan")} icon={<Camera size={18} />} label="Scan" />
         <Tab active={page === "dogs"} onClick={() => setPage("dogs")} icon={<Dog size={18} />} label="Dogs" />
+        <Tab active={page === "treatments"} onClick={() => setPage("treatments")} icon={<ClipboardList size={18} />} label="Treatments" />
         {isAdmin && <Tab active={page === "data"} onClick={() => setPage("data")} icon={<SlidersHorizontal size={18} />} label="Data" />}
         {isAdmin && <Tab active={page === "history"} onClick={() => setPage("history")} icon={<History size={18} />} label="Activity" />}
         {isAdmin && <Tab active={page === "admin"} onClick={() => setPage("admin")} icon={<Users size={18} />} label="Admin" />}
@@ -528,6 +583,7 @@ function App() {
         {page === "dashboard" && <Dashboard store={store} actions={actions} isAdmin={isAdmin} session={session} />}
         {page === "scan" && <ScanPage medicines={store.medicines} onUpdate={actions.updateMedicine} session={session} />}
         {page === "dogs" && <DogsPage dogs={store.dogs} actions={actions} isAdmin={isAdmin} />}
+        {page === "treatments" && <TreatmentsPage store={store} actions={actions} session={session} isAdmin={isAdmin} />}
         {page === "data" && isAdmin && <DataPage store={store} actions={actions} />}
         {page === "history" && isAdmin && <HistoryPage history={store.history || []} />}
         {page === "admin" && isAdmin && <AdminPage users={store.users} actions={actions} />}
@@ -913,7 +969,7 @@ function MedicineDialog({ title, medicine, types, subclasses, dogs, onClose, onS
   return (
     <Dialog onClose={onClose} title={title}>
       <form className="form gridForm" onSubmit={submit}>
-        <label>Name<input required value={form.name} onChange={(event) => update("name", event.target.value)} /></label>
+        <label>Dog name<input required value={form.name} onChange={(event) => update("name", event.target.value)} /></label>
         <label>Type<select value={form.type} onChange={(event) => update("type", event.target.value)}>{types.map((item) => <option key={item}>{item}</option>)}</select></label>
         <label>Subclass<select value={form.subclass} onChange={(event) => update("subclass", event.target.value)}>{subclasses.map((item) => <option key={item}>{item}</option>)}</select></label>
         <label>Dosage<input required placeholder="5mg" value={form.dosage} onChange={(event) => update("dosage", event.target.value)} /></label>
@@ -1181,6 +1237,102 @@ function DogsPage({ dogs, actions, isAdmin }) {
       </form>
     </section>
   );
+}
+
+function TreatmentsPage({ store, actions, session, isAdmin }) {
+  const [dialog, setDialog] = useState(null);
+  const dogById = Object.fromEntries(store.dogs.map((dog) => [dog.id, dog]));
+  const treatments = store.treatments || [];
+
+  return (
+    <section className="pageStack">
+      <div className="toolbar">
+        <div>
+          <h2>Ongoing Treatments</h2>
+          <p className="helperText">Track current dog treatment courses and reserve linked inventory medicines on hold.</p>
+        </div>
+        <button className="primary" onClick={() => setDialog({ mode: "add" })}><Plus size={18} /> Add Treatment</button>
+      </div>
+      <div className="tableWrap">
+        <table>
+          <thead><tr><th>Dog</th><th>Course</th><th>Meds</th><th>Revisit</th><th>Notes</th><th>Actions</th></tr></thead>
+          <tbody>
+            {treatments.map((treatment) => (
+              <tr key={treatment.id}>
+                <td><strong>{treatment.name}</strong><small>{dogById[treatment.dogId]?.kennel || treatment.dogName || "Custom dog"}</small></td>
+                <td>{treatment.courseDuration}<small>{treatment.frequencyPerDay ? `${treatment.frequencyPerDay} times/day` : ""}</small></td>
+                <td>{(treatment.meds || []).map((med) => <span className={med.inventoryId ? "pill hold" : "pill"} key={`${treatment.id}-${med.name}`}>{med.name}{med.dosage ? ` · ${med.dosage}` : ""}</span>)}</td>
+                <td>{treatment.revisitWhen || "Not set"}</td>
+                <td>{treatment.notes || "—"}</td>
+                <td className="actions"><button title="Edit treatment" onClick={() => setDialog({ mode: "edit", treatment })}><Edit3 size={16} /></button>{isAdmin && <button title="Delete treatment" onClick={() => actions.deleteTreatment(treatment.id)}><Trash2 size={16} /></button>}</td>
+              </tr>
+            ))}
+            {!treatments.length && <tr><td colSpan="6" className="empty">No ongoing treatments yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {dialog && <TreatmentDialog treatment={dialog.treatment} store={store} onClose={() => setDialog(null)} onSave={async (payload) => { await actions.saveTreatment(payload, session); setDialog(null); }} />}
+    </section>
+  );
+}
+
+function TreatmentDialog({ treatment, store, onClose, onSave }) {
+  const firstDog = store.dogs[0] || { id: "", name: "" };
+  const [form, setForm] = useState(treatment || {
+    name: firstDog.name,
+    dogId: firstDog.id,
+    dogName: firstDog.name,
+    courseDuration: "",
+    frequencyPerDay: "",
+    dosage: "",
+    revisitWhen: "",
+    notes: "",
+    meds: [{ inventoryId: "", name: "", custom: "" }]
+  });
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  function update(key, value) { setForm((current) => ({ ...current, [key]: value })); }
+  function selectDog(dogId) {
+    const dog = store.dogs.find((item) => item.id === dogId);
+    setForm((current) => ({ ...current, dogId, dogName: dog?.name || "", name: dog?.name || current.name }));
+  }
+  function updateMed(index, key, value) {
+    setForm((current) => ({
+      ...current,
+      meds: current.meds.map((med, medIndex) => {
+        if (medIndex !== index) return med;
+        if (key === "inventoryId") {
+          const medicine = store.medicines.find((item) => item.serialNumber === value);
+          return { ...med, inventoryId: value, name: medicine?.name || "", dosage: medicine?.dosage || med.dosage || "", custom: "" };
+        }
+        return { ...med, [key]: value, ...(key === "custom" ? { inventoryId: "", name: value } : {}) };
+      })
+    }));
+  }
+  async function submit(event) {
+    event.preventDefault();
+    setIsSaving(true); setError("");
+    try {
+      await onSave({ ...form, meds: form.meds.filter((med) => med.name || med.custom || med.inventoryId) });
+    } catch (saveError) { setError(saveError?.message || "Could not save treatment."); }
+    finally { setIsSaving(false); }
+  }
+
+  return <Dialog onClose={onClose} title={treatment ? "Edit Treatment" : "Add Treatment"}>
+    <form className="form gridForm" onSubmit={submit}>
+      <label>Dog<select value={form.dogId} onChange={(event) => selectDog(event.target.value)}><option value="">Custom dog/name below</option>{store.dogs.map((dog) => <option key={dog.id} value={dog.id}>{dog.name} · {dog.kennel}</option>)}</select></label>
+      <label>Dog name<input required value={form.name} onChange={(event) => update("name", event.target.value)} /></label>
+      <label>Course duration<input required placeholder="7 days" value={form.courseDuration} onChange={(event) => update("courseDuration", event.target.value)} /></label>
+      <label>Frequency per day<input required type="number" min="1" placeholder="2" value={form.frequencyPerDay} onChange={(event) => update("frequencyPerDay", event.target.value)} /></label>
+      <label>Dosage<input required placeholder="1 tablet / 5 ml" value={form.dosage} onChange={(event) => update("dosage", event.target.value)} /></label>
+      <label>Revisit when<input type="date" value={form.revisitWhen} onChange={(event) => update("revisitWhen", event.target.value)} /></label>
+      <div className="wide medPickerList"><strong>Medicines</strong>{form.meds.map((med, index) => <div className="medPicker" key={index}><select value={med.inventoryId} onChange={(event) => updateMed(index, "inventoryId", event.target.value)}><option value="">Custom medicine</option>{store.medicines.map((medicine) => <option key={medicine.serialNumber} value={medicine.serialNumber}>{medicine.name} · {medicine.dosage} · {medicine.quantity} left</option>)}</select><input placeholder="Custom med name" value={med.custom || (!med.inventoryId ? med.name : "")} onChange={(event) => updateMed(index, "custom", event.target.value)} disabled={Boolean(med.inventoryId)} /></div>)}<button type="button" onClick={() => update("meds", [...form.meds, { inventoryId: "", name: "", custom: "" }])}><Plus size={18} /> Add med</button></div>
+      <label className="wide">Additional notes<textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} /></label>
+      {error && <p className="error wide">{error}</p>}
+      <button className="primary wide" disabled={isSaving}><Check size={18} /> {isSaving ? "Saving..." : "Save Treatment & Hold Meds"}</button>
+    </form>
+  </Dialog>;
 }
 
 function DataPage({ store, actions }) {
